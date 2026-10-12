@@ -3,18 +3,511 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Honeypot Dashboard</title>
-  <style>
-    body {
-      margin: 0;
-      height: 100vh;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      background-color: #0a0f1a;
-      color: #ffffff;
-    }
-  </style>
+  <meta name="description" content="Honeypot Attack Console - Real-time security telemetry, threat analytics, and attacker session replays.">
+  <title>Honeypot Attack Console</title>
+
+  <!-- Google Fonts: IBM Plex Sans & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <!-- Chart.js pinned to exact required version -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
 </head>
-<body>Hello</body>
+<body>
+
+  <!-- Offline / Connection Loss Notification Banner -->
+  <div id="connection-banner" class="connection-banner hidden" role="alert" aria-live="assertive">
+    <span class="pulse-warning-dot" aria-hidden="true"></span>
+    <span id="connection-banner-text">Connection lost, retrying...</span>
+  </div>
+
+  <!-- VIEW 1: LOGIN SCREEN -->
+  <div id="login-view" class="view-container login-container" role="region" aria-label="Login Screen">
+    <div class="login-wrapper">
+      
+      <!-- Kiko Mascot (Login Placement) -->
+      <div id="kiko-login-slot" class="kiko-stage kiko-login-stage">
+        <div id="kiko-login-bubble" class="kiko-speech-bubble" role="status" aria-live="polite">
+          <p id="kiko-login-bubble-text">Hi there! Show me your credentials~</p>
+        </div>
+        <div id="kiko-login-avatar" class="kiko-avatar-wrapper" aria-label="Kiko, honeypot security mascot" role="img">
+          <!-- Kiko SVG injected here -->
+        </div>
+      </div>
+
+      <!-- Login Card -->
+      <div class="login-card">
+        <div class="login-header">
+          <div class="shield-badge" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              <path d="M9 12l2 2 4-4"/>
+            </svg>
+          </div>
+          <h1>Honeypot Attack Console</h1>
+          <p class="login-subtext">Restricted security operations dashboard</p>
+        </div>
+
+        <!-- Backend URL Status Warning (if PLACEHOLDER) -->
+        <div id="backend-warning" class="status-alert warning-alert hidden" role="alert">
+          <span class="alert-icon" aria-hidden="true">⚠️</span>
+          <span>Backend URL is not set.</span>
+        </div>
+
+        <!-- Login Form -->
+        <form id="login-form" novalidate>
+          <div class="form-group">
+            <label for="username">Username</label>
+            <input 
+              type="text" 
+              id="username" 
+              name="username" 
+              autocomplete="username" 
+              required 
+              placeholder="operator"
+              spellcheck="false"
+            >
+          </div>
+
+          <div class="form-group">
+            <label for="password">Password</label>
+            <input 
+              type="password" 
+              id="password" 
+              name="password" 
+              autocomplete="current-password" 
+              required 
+              placeholder="••••••••••••"
+            >
+          </div>
+
+          <!-- Inline Error & Status Messages -->
+          <div id="login-error" class="status-alert error-alert hidden" role="alert" aria-live="assertive"></div>
+          <div id="login-info" class="status-alert info-alert hidden" role="status" aria-live="polite"></div>
+
+          <button type="submit" id="login-btn" class="btn btn-primary btn-block">
+            <span id="login-btn-spinner" class="btn-spinner hidden" aria-hidden="true"></span>
+            <span id="login-btn-text">Log in</span>
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- VIEW 2: DASHBOARD SCREEN -->
+  <div id="dashboard-view" class="view-container dashboard-container hidden" role="region" aria-label="Security Dashboard">
+    
+    <!-- Top Persistent Header -->
+    <header class="console-header">
+      <div class="header-branding">
+        <div class="brand-title-wrap">
+          <svg class="header-logo" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            <path d="M12 8v4"/>
+            <path d="M12 16h.01"/>
+          </svg>
+          <span class="console-title">Honeypot Attack Console</span>
+        </div>
+        <div class="live-pill" aria-label="System is active">
+          <span class="live-dot" aria-hidden="true"></span>
+          <span>LIVE</span>
+        </div>
+      </div>
+
+      <!-- Navigation Tabs -->
+      <nav class="header-tabs" role="tablist" aria-label="Dashboard sections">
+        <a href="#overview" id="tab-link-overview" class="tab-link active" role="tab" aria-selected="true" aria-controls="pane-overview">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+            <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+          </svg>
+          <span>Overview</span>
+        </a>
+        <a href="#live" id="tab-link-live" class="tab-link" role="tab" aria-selected="false" aria-controls="pane-live">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+          </svg>
+          <span>Live Threats</span>
+        </a>
+        <a href="#analysis" id="tab-link-analysis" class="tab-link" role="tab" aria-selected="false" aria-controls="pane-analysis">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/>
+            <line x1="6" y1="20" x2="6" y2="14"/>
+          </svg>
+          <span>Sessions & Analysis</span>
+        </a>
+      </nav>
+
+      <!-- Header Utilities -->
+      <div class="header-controls">
+        <!-- Auto-refresh Countdown Ring -->
+        <div class="refresh-indicator" title="Auto-refresh interval" aria-label="Auto-refresh countdown">
+          <svg class="countdown-svg" width="30" height="30" viewBox="0 0 36 36" aria-hidden="true">
+            <path class="circle-bg"
+              d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+            />
+            <path id="countdown-progress" class="circle-fg"
+              stroke-dasharray="100, 100"
+              stroke-dashoffset="0"
+              d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
+            />
+          </svg>
+          <span id="countdown-text" class="countdown-text">15s</span>
+        </div>
+
+        <!-- Mascot Toggle -->
+        <button id="toggle-mascot-btn" class="btn btn-ghost btn-sm" aria-label="Toggle Kiko Mascot" title="Toggle Kiko">
+          <span id="toggle-mascot-label">Hide Kiko</span>
+        </button>
+
+        <!-- Logout Button -->
+        <button id="logout-btn" class="btn btn-secondary btn-sm" aria-label="Log out of console">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+            <polyline points="16 17 21 12 16 7"/>
+            <line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+          <span>Log out</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Dashboard Content Area -->
+    <main class="console-main">
+      
+      <!-- TAB 1: OVERVIEW (#overview) -->
+      <section id="pane-overview" class="tab-pane active" role="tabpanel" aria-labelledby="tab-link-overview">
+        
+        <!-- Four Stat Cards -->
+        <div class="stats-grid">
+          <div class="stat-card" tabindex="0" data-tooltip="Total interactive connections accepted by the honeypot">
+            <div class="stat-header">
+              <span class="stat-title">Total Sessions</span>
+              <span class="stat-icon" aria-hidden="true">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                </svg>
+              </span>
+            </div>
+            <div class="stat-value" id="stat-total-sessions">—</div>
+            <div class="stat-footer">Tracked connections</div>
+          </div>
+
+          <div class="stat-card" tabindex="0" data-tooltip="Aggregate malicious interactions, logins, and commands recorded">
+            <div class="stat-header">
+              <span class="stat-title">Total Attacks</span>
+              <span class="stat-icon" aria-hidden="true">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                </svg>
+              </span>
+            </div>
+            <div class="stat-value" id="stat-total-attacks">—</div>
+            <div class="stat-footer">Hostile events</div>
+          </div>
+
+          <div class="stat-card" tabindex="0" data-tooltip="Distinct source IP addresses probing or attacking the honeypot">
+            <div class="stat-header">
+              <span class="stat-title">Unique IPs</span>
+              <span class="stat-icon" aria-hidden="true">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+                </svg>
+              </span>
+            </div>
+            <div class="stat-value" id="stat-unique-ips">—</div>
+            <div class="stat-footer">Adversary nodes</div>
+          </div>
+
+          <div class="stat-card stat-critical" tabindex="0" data-tooltip="Sessions that scored 75 or higher on threat risk evaluation">
+            <div class="stat-header">
+              <span class="stat-title">Critical Sessions</span>
+              <span class="stat-icon stat-icon-critical" aria-hidden="true">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                  <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+              </span>
+            </div>
+            <div class="stat-value text-critical" id="stat-critical-sessions">—</div>
+            <div class="stat-footer">Score ≥ 75 high hazard</div>
+          </div>
+        </div>
+
+        <!-- Overview Charts Grid -->
+        <div class="charts-grid-two">
+          <!-- Timeline Area Chart Panel -->
+          <div class="panel-card chart-panel">
+            <div class="panel-header">
+              <div>
+                <h2>Attack Activity Timeline</h2>
+                <p class="panel-subtitle">Temporal attack trend across recent dates</p>
+              </div>
+            </div>
+            <div class="panel-body chart-body-wrapper">
+              <div id="timeline-empty" class="empty-state hidden">
+                <span class="empty-icon" aria-hidden="true">📊</span>
+                <p>No data yet</p>
+              </div>
+              <div class="chart-canvas-container" id="timeline-container">
+                <canvas id="timeline-chart" aria-label="Attack Activity Timeline Chart" role="img"></canvas>
+              </div>
+            </div>
+          </div>
+
+          <!-- Risk Distribution Donut Chart Panel -->
+          <div class="panel-card chart-panel">
+            <div class="panel-header">
+              <div>
+                <h2>Risk Distribution</h2>
+                <p class="panel-subtitle">Severity classification breakdown</p>
+              </div>
+            </div>
+            <div class="panel-body chart-body-wrapper">
+              <div id="risk-empty" class="empty-state hidden">
+                <span class="empty-icon" aria-hidden="true">🎯</span>
+                <p>No data yet</p>
+              </div>
+              <div class="chart-canvas-container donut-canvas-container" id="risk-container">
+                <canvas id="risk-chart" aria-label="Risk Distribution Donut Chart" role="img"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 2: LIVE THREATS (#live) -->
+      <section id="pane-live" class="tab-pane" role="tabpanel" aria-labelledby="tab-link-live">
+        <div class="live-grid">
+          
+          <!-- Live Attack Feed -->
+          <div class="panel-card live-feed-panel">
+            <div class="panel-header">
+              <div>
+                <h2>Live Attack Feed</h2>
+                <p class="panel-subtitle">Latest 12 honeypot events (auto-refreshed)</p>
+              </div>
+              <span class="feed-indicator-badge">Real-time</span>
+            </div>
+            <div class="panel-body">
+              <div id="feed-empty" class="empty-state hidden">
+                <span class="empty-icon" aria-hidden="true">📡</span>
+                <p>No data yet</p>
+              </div>
+              <ul id="live-feed-list" class="feed-list" aria-label="Real-time honeypot attack event stream">
+                <!-- Feed items rendered via JavaScript -->
+              </ul>
+            </div>
+          </div>
+
+          <!-- Attack Origins Map -->
+          <div class="panel-card map-panel">
+            <div class="panel-header">
+              <div>
+                <h2>Attack Origins Map</h2>
+                <p class="panel-subtitle">Equirectangular geographic telemetry</p>
+              </div>
+            </div>
+            <div class="panel-body map-body-wrapper">
+              <div id="map-message-overlay" class="map-overlay-banner hidden">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+                </svg>
+                <span id="map-overlay-text">No location data available. Lab IPs are private and have no location.</span>
+              </div>
+              
+              <!-- Inline Stylized Vector World Map -->
+              <div class="map-viewport" id="map-viewport">
+                <svg id="world-map-svg" viewBox="0 0 1000 500" preserveAspectRatio="xMidYMid meet" aria-label="Stylized world map with attack origins">
+                  <defs>
+                    <radialGradient id="marker-glow-critical" cx="50%" cy="50%" r="50%">
+                      <stop offset="0%" stop-color="#f87171" stop-opacity="0.9"/>
+                      <stop offset="100%" stop-color="#f87171" stop-opacity="0"/>
+                    </radialGradient>
+                    <radialGradient id="marker-glow-high" cx="50%" cy="50%" r="50%">
+                      <stop offset="0%" stop-color="#fb923c" stop-opacity="0.9"/>
+                      <stop offset="100%" stop-color="#fb923c" stop-opacity="0"/>
+                    </radialGradient>
+                    <radialGradient id="marker-glow-medium" cx="50%" cy="50%" r="50%">
+                      <stop offset="0%" stop-color="#fbbf24" stop-opacity="0.9"/>
+                      <stop offset="100%" stop-color="#fbbf24" stop-opacity="0"/>
+                    </radialGradient>
+                    <radialGradient id="marker-glow-low" cx="50%" cy="50%" r="50%">
+                      <stop offset="0%" stop-color="#34d399" stop-opacity="0.9"/>
+                      <stop offset="100%" stop-color="#34d399" stop-opacity="0"/>
+                    </radialGradient>
+                  </defs>
+
+                  <!-- Map Background and Grid -->
+                  <rect width="1000" height="500" fill="#0b1220" rx="8"/>
+                  <g class="map-grid" stroke="#17243b" stroke-width="0.8" stroke-dasharray="3,3">
+                    <!-- Parallels -->
+                    <line x1="0" y1="83.3" x2="1000" y2="83.3"/>
+                    <line x1="0" y1="166.6" x2="1000" y2="166.6"/>
+                    <line x1="0" y1="250" x2="1000" y2="250" stroke="#1f3252" stroke-dasharray="none" stroke-width="1.2"/>
+                    <line x1="0" y1="333.3" x2="1000" y2="333.3"/>
+                    <line x1="0" y1="416.6" x2="1000" y2="416.6"/>
+                    <!-- Meridians -->
+                    <line x1="166.6" y1="0" x2="166.6" y2="500"/>
+                    <line x1="333.3" y1="0" x2="333.3" y2="500"/>
+                    <line x1="500" y1="0" x2="500" y2="500" stroke="#1f3252" stroke-dasharray="none" stroke-width="1.2"/>
+                    <line x1="666.6" y1="0" x2="666.6" y2="500"/>
+                    <line x1="833.3" y1="0" x2="833.3" y2="500"/>
+                  </g>
+
+                  <!-- Stylized Continents (Decorative artwork) -->
+                  <g class="map-continents" fill="#132036" stroke="#223759" stroke-width="1.2" stroke-linejoin="round">
+                    <!-- North America -->
+                    <path d="M 120 70 L 160 60 L 220 65 L 260 90 L 270 125 L 240 145 L 220 185 L 210 240 L 175 220 L 145 180 L 110 140 L 95 105 Z M 165 45 L 230 40 L 220 60 Z M 270 50 L 320 55 L 305 85 L 265 75 Z"/>
+                    <!-- South America -->
+                    <path d="M 230 250 L 280 270 L 320 310 L 300 365 L 270 430 L 245 440 L 235 380 L 220 320 L 210 270 Z"/>
+                    <!-- Europe -->
+                    <path d="M 460 85 L 500 80 L 540 100 L 530 140 L 485 155 L 450 145 L 440 115 Z M 430 95 L 445 90 L 440 120 L 425 110 Z M 480 50 L 510 55 L 495 80 Z"/>
+                    <!-- Africa -->
+                    <path d="M 450 165 L 515 160 L 555 210 L 580 260 L 550 320 L 520 390 L 480 395 L 455 310 L 430 240 L 435 180 Z M 575 325 L 595 340 L 585 375 L 570 355 Z"/>
+                    <!-- Asia -->
+                    <path d="M 545 85 L 630 75 L 750 85 L 830 110 L 860 145 L 810 190 L 760 210 L 730 260 L 680 270 L 660 220 L 620 200 L 570 170 L 545 130 Z M 690 280 L 710 320 L 675 330 Z M 770 230 L 820 265 L 805 320 L 765 290 Z M 840 150 L 865 170 L 850 205 L 830 180 Z"/>
+                    <!-- Australia & Oceania -->
+                    <path d="M 770 340 L 850 335 L 870 390 L 830 435 L 775 420 L 755 375 Z M 885 415 L 900 440 L 880 445 Z"/>
+                    <!-- Greenland & Arctic -->
+                    <path d="M 320 40 L 375 45 L 360 85 L 315 70 Z"/>
+                  </g>
+
+                  <!-- Dynamic Map Markers Plotted via JavaScript -->
+                  <g id="map-markers-layer"></g>
+                </svg>
+              </div>
+
+              <!-- Interactive Map Tooltip -->
+              <div id="map-tooltip" class="map-tooltip hidden" role="tooltip">
+                <div class="tooltip-ip" id="tooltip-ip">—</div>
+                <div class="tooltip-risk" id="tooltip-risk">—</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- TAB 3: SESSIONS & ANALYSIS (#analysis) -->
+      <section id="pane-analysis" class="tab-pane" role="tabpanel" aria-labelledby="tab-link-analysis">
+        
+        <!-- Top IPs and Top Commands Bar Charts -->
+        <div class="charts-grid-two">
+          
+          <!-- Top Attack Source IPs -->
+          <div class="panel-card chart-panel">
+            <div class="panel-header">
+              <div>
+                <h2>Top Attacking IPs</h2>
+                <p class="panel-subtitle">Most active adversarial source hosts</p>
+              </div>
+            </div>
+            <div class="panel-body chart-body-wrapper">
+              <div id="top-ips-empty" class="empty-state hidden">
+                <span class="empty-icon" aria-hidden="true">🌐</span>
+                <p>No data yet</p>
+              </div>
+              <div class="chart-canvas-container" id="top-ips-container">
+                <canvas id="top-ips-chart" aria-label="Top Attacking IPs Bar Chart" role="img"></canvas>
+              </div>
+            </div>
+          </div>
+
+          <!-- Top Executed Commands -->
+          <div class="panel-card chart-panel">
+            <div class="panel-header">
+              <div>
+                <h2>Top Executed Commands</h2>
+                <p class="panel-subtitle">High-frequency honeypot shell commands</p>
+              </div>
+            </div>
+            <div class="panel-body chart-body-wrapper">
+              <div id="top-commands-empty" class="empty-state hidden">
+                <span class="empty-icon" aria-hidden="true">⌨️</span>
+                <p>No data yet</p>
+              </div>
+              <div class="chart-canvas-container" id="top-commands-container">
+                <canvas id="top-commands-chart" aria-label="Top Executed Commands Bar Chart" role="img"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Sessions Master Table Panel -->
+        <div class="panel-card table-panel">
+          <div class="panel-header">
+            <div>
+              <h2>Attacker Sessions</h2>
+              <p class="panel-subtitle">Detailed telemetry logs, click any row to inspect replay and credentials</p>
+            </div>
+            <div class="table-meta-info" id="table-record-count">Showing —</div>
+          </div>
+
+          <div class="panel-body table-responsive-wrapper">
+            <div id="table-empty" class="empty-state hidden">
+              <span class="empty-icon" aria-hidden="true">🗂️</span>
+              <p>No data yet</p>
+            </div>
+
+            <table class="sessions-table" id="sessions-table" aria-label="Attacker sessions detailed log">
+              <thead>
+                <tr>
+                  <th scope="col" class="sortable" data-sort="session_id" tabindex="0" role="button" aria-sort="none">
+                    <span>Session ID</span>
+                    <span class="sort-indicator" aria-hidden="true">↕</span>
+                  </th>
+                  <th scope="col" class="sortable" data-sort="src_ip" tabindex="0" role="button" aria-sort="none">
+                    <span>Source IP</span>
+                    <span class="sort-indicator" aria-hidden="true">↕</span>
+                  </th>
+                  <th scope="col" class="sortable" data-sort="risk_score" tabindex="0" role="button" aria-sort="descending">
+                    <span>Risk Score</span>
+                    <span class="sort-indicator" aria-hidden="true">▼</span>
+                  </th>
+                  <th scope="col" class="sortable" data-sort="risk_level" tabindex="0" role="button" aria-sort="none">
+                    <span>Level</span>
+                    <span class="sort-indicator" aria-hidden="true">↕</span>
+                  </th>
+                  <th scope="col" class="sortable" data-sort="start_time" tabindex="0" role="button" aria-sort="none">
+                    <span>Started</span>
+                    <span class="sort-indicator" aria-hidden="true">↕</span>
+                  </th>
+                  <th scope="col" class="sortable" data-sort="command_count" tabindex="0" role="button" aria-sort="none">
+                    <span>Commands</span>
+                    <span class="sort-indicator" aria-hidden="true">↕</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody id="sessions-tbody">
+                <!-- Dynamically rendered table rows -->
+              </tbody>
+            </table>
+
+            <!-- Show More Button -->
+            <div class="table-pagination-footer" id="pagination-footer">
+              <button id="show-more-btn" class="btn btn-secondary btn-sm hidden">
+                <span>Show more sessions</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Kiko Mascot (Dashboard Fixed Placement) -->
+    <div id="kiko-dashboard-slot" class="kiko-stage kiko-dash-stage" aria-label="Kiko Mascot Console Assistant">
+      <div id="kiko-dash-bubble" class="kiko-speech-bubble" role="status" aria-live="polite">
+        <p id="kiko-dash-bubble-text">Welcome back, analyst! Here is your attack summary.</p>
+      </div>
+      <div id="kiko-dash-avatar" class="kiko-avatar-wrapper" aria-label="Kiko, honeypot security mascot" role="img" tabindex="0">
+        <!-- Injected inline SVG -->
+      </div>
+    </div>
+  </div>
+
+</body>
 </html>
