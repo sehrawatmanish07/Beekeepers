@@ -880,7 +880,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
           legend: {
             position: "bottom",
             labels: {
-              color: "#8fa3c0",
+              color: "#ffffff",
               font: { family: "IBM Plex Sans", size: 12 },
               padding: 16,
               usePointStyle: true,
