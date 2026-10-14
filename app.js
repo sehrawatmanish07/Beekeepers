@@ -890,6 +890,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
                 const data = chart.data;
                 return data.labels.map((label, i) => ({
                   text: `${label} (${data.datasets[0].data[i]})`,
+                  fontColor: "#ffffff",
                   fillStyle: colors[i],
                   strokeStyle: colors[i],
                   hidden: false,
