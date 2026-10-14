@@ -851,6 +851,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
     if (riskChart) {
       riskChart.data.datasets[0].data = counts;
+      riskChart.options.plugins.legend.labels.color = "#ffffff";
       riskChart.update();
       return;
     }
