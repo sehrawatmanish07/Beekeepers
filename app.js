@@ -644,7 +644,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
       const data = await res.json();
       lastDashboardData = data;
-      el.exportPdfBtn.disabled = !Array.isArray(data.sessions);
+      el.exportPdfBtn.disabled = !data || !Array.isArray(data.sessions);
       el.connectionBanner.classList.add("hidden");
 
       renderDashboard(data);
@@ -1682,10 +1682,16 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     }
   }
 
+  function hasPdfLibrary() {
+    return typeof window.jspdf !== "undefined" &&
+      Boolean(window.jspdf.jsPDF) &&
+      Boolean(window.jspdf.jsPDF.API) &&
+      typeof window.jspdf.jsPDF.API.autoTable === "function";
+  }
+
   function getPdfLibrary() {
-    if (typeof window.jspdf === "undefined" || !window.jspdf.jsPDF) return null;
-    const doc = new window.jspdf.jsPDF({ format: "a4", unit: "mm", orientation: "portrait" });
-    return typeof doc.autoTable === "function" ? doc : null;
+    if (!hasPdfLibrary()) return null;
+    return new window.jspdf.jsPDF({ format: "a4", unit: "mm", orientation: "portrait" });
   }
 
   function pdfString(value, fallback = "—") {
@@ -1981,7 +1987,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   }
 
   function initPdfExport() {
-    if (document.documentElement.dataset.pdfToolUnavailable === "true" || !getPdfLibrary()) {
+    if (document.documentElement.dataset.pdfToolUnavailable === "true" || !hasPdfLibrary()) {
       showPdfExportStatus("Could not load the PDF tool. Please check your connection.", true);
     }
     el.exportPdfBtn.addEventListener("click", () => {
