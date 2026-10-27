@@ -403,6 +403,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
         showLoginInfo("The server may be waking up, this can take up to a minute");
       }
     }, 5000);
+    let authenticated = false;
 
     try {
       const response = await fetch(`${API_BASE}/api/login`, {
@@ -423,7 +424,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
         if (token) {
           sessionStorage.setItem(TOKEN_KEY, token);
           el.passwordInput.value = "";
-          showDashboardView();
+          authenticated = true;
         } else {
           showLoginError("Unexpected response from server");
         }
@@ -444,6 +445,9 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
       el.loginBtn.disabled = false;
       el.loginBtnSpinner.classList.add("hidden");
       el.loginBtnText.textContent = "Log in";
+      if (authenticated) {
+        showDashboardView();
+      }
     }
   }
 
@@ -882,7 +886,8 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
         ctx.font = "bold 24px 'JetBrains Mono', monospace";
         ctx.fillStyle = "#e6edf7";
-        ctx.fillText(total.toLocaleString(), centerX, centerY - 6);
+        const currentTotal = chart.data.datasets[0].data.reduce((sum, count) => sum + Number(count || 0), 0);
+        ctx.fillText(currentTotal.toLocaleString(), centerX, centerY - 6);
 
         ctx.font = "600 11px 'IBM Plex Sans', sans-serif";
         ctx.fillStyle = "#8fa3c0";
@@ -1122,11 +1127,9 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
         el.tooltipRisk.textContent = `Risk Level: ${m.risk}`;
         el.mapTooltip.classList.remove("hidden");
 
-        const rect = el.mapMarkersLayer.getBoundingClientRect();
-        const clientX = e.clientX;
-        const clientY = e.clientY;
-        el.mapTooltip.style.left = `${clientX}px`;
-        el.mapTooltip.style.top = `${clientY}px`;
+        const rect = el.mapTooltip.parentElement.getBoundingClientRect();
+        el.mapTooltip.style.left = `${e.clientX - rect.left}px`;
+        el.mapTooltip.style.top = `${e.clientY - rect.top}px`;
       });
 
       group.addEventListener("mouseleave", () => {
@@ -1296,8 +1299,9 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
             padding: 10,
             callbacks: {
               title: function (items) {
-                const index = items[0].dataIndex;
-                return fullCommands[index] || "";
+                const item = items[0];
+                const commands = item.chart.data.datasets[0].fullCommands;
+                return commands[item.dataIndex] || "";
               },
               label: function (item) {
                 return `Executions: ${item.parsed.x}`;
