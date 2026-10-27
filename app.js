@@ -29,6 +29,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   let currentSortColumn = "risk_score";
   let currentSortAsc = false;
   let sessionsDisplayLimit = 100;
+  let sessionsSearchDebounceId = null;
   let knownSessionIds = new Set();
   let expandedSessionIds = new Set();
   let animatedSessionIds = new Set();
@@ -106,6 +107,8 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     tableEmpty: document.getElementById("table-empty"),
     tableRecordCount: document.getElementById("table-record-count"),
     showMoreBtn: document.getElementById("show-more-btn"),
+    sessionSearchInput: document.getElementById("session-search-input"),
+    sessionSearchClear: document.getElementById("session-search-clear"),
 
     // Mascot
     kikoLoginStage: document.getElementById("kiko-login-slot"),
@@ -464,6 +467,10 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   function handleLogout(message) {
     sessionStorage.removeItem(TOKEN_KEY);
     stopPolling();
+    clearTimeout(sessionsSearchDebounceId);
+    sessionsSearchDebounceId = null;
+    el.sessionSearchInput.value = "";
+    el.sessionSearchClear.classList.add("hidden");
     lastDashboardData = null;
     el.exportPdfBtn.disabled = true;
 
@@ -503,6 +510,26 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
   function initNavigation() {
     window.addEventListener("hashchange", handleHashRouting);
+
+    el.sessionSearchInput.addEventListener("input", () => {
+      el.sessionSearchClear.classList.toggle("hidden", el.sessionSearchInput.value.length === 0);
+      clearTimeout(sessionsSearchDebounceId);
+      sessionsSearchDebounceId = setTimeout(() => {
+        sessionsSearchDebounceId = null;
+        if (lastDashboardData && Array.isArray(lastDashboardData.sessions)) {
+          renderSessionsTable(lastDashboardData.sessions);
+        }
+      }, 150);
+    });
+
+    el.sessionSearchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && el.sessionSearchInput.value.length > 0) {
+        event.preventDefault();
+        clearSessionsSearch();
+      }
+    });
+
+    el.sessionSearchClear.addEventListener("click", () => clearSessionsSearch());
 
     if (el.logoutBtn) {
       el.logoutBtn.addEventListener("click", () => handleLogout());
@@ -571,6 +598,17 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
     // Update Kiko quote for this tab
     showKikoBubble(getCurrentMascotQuote(), 3000);
+  }
+
+  function clearSessionsSearch() {
+    clearTimeout(sessionsSearchDebounceId);
+    sessionsSearchDebounceId = null;
+    el.sessionSearchInput.value = "";
+    el.sessionSearchClear.classList.add("hidden");
+    if (lastDashboardData && Array.isArray(lastDashboardData.sessions)) {
+      renderSessionsTable(lastDashboardData.sessions);
+    }
+    el.sessionSearchInput.focus();
   }
 
   /* ==========================================================================
@@ -1287,7 +1325,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
   /* 8. Sessions Table with Sorting, Expanding Rows, Typewriter Replay & Attempts */
   function renderSessionsTable(sessions) {
-    if (!Array.isArray(sessions) || sessions.length === 0) {
+    if (!Array.isArray(sessions)) {
       el.tableEmpty.classList.remove("hidden");
       el.sessionsTbody.textContent = "";
       el.tableRecordCount.textContent = "0 sessions";
@@ -1297,20 +1335,55 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
     el.tableEmpty.classList.add("hidden");
 
-    // Sort sessions
-    const sorted = sortSessionsList([...sessions], currentSortColumn, currentSortAsc);
-    const totalCount = sorted.length;
+    const searchQuery = el.sessionSearchInput.value.trim().toLowerCase();
+    const filteredSessions = searchQuery
+      ? sessions.filter((session) => String(session.src_ip || "").toLowerCase().includes(searchQuery))
+      : sessions;
+
+    if (sessions.length === 0 && !searchQuery) {
+      el.tableEmpty.classList.remove("hidden");
+      el.sessionsTbody.textContent = "";
+      el.tableRecordCount.textContent = "0 sessions";
+      el.showMoreBtn.classList.add("hidden");
+      return;
+    }
+
+    const sorted = sortSessionsList([...filteredSessions], currentSortColumn, currentSortAsc);
     const visibleSessions = sorted.slice(0, sessionsDisplayLimit);
 
-    el.tableRecordCount.textContent = `Showing ${visibleSessions.length} of ${totalCount}`;
+    el.tableRecordCount.textContent = `Showing ${visibleSessions.length} of ${sessions.length}`;
+    el.sessionsTbody.textContent = "";
 
-    if (totalCount > sessionsDisplayLimit) {
+    if (filteredSessions.length > sessionsDisplayLimit) {
       el.showMoreBtn.classList.remove("hidden");
     } else {
       el.showMoreBtn.classList.add("hidden");
     }
 
-    el.sessionsTbody.textContent = "";
+    if (searchQuery && filteredSessions.length === 0) {
+      const emptyRow = document.createElement("tr");
+      const emptyCell = document.createElement("td");
+      emptyCell.colSpan = 6;
+
+      const emptyMessage = document.createElement("div");
+      emptyMessage.className = "session-search-empty";
+
+      const message = document.createElement("span");
+      message.textContent = "No sessions found for this IP.";
+      emptyMessage.appendChild(message);
+
+      const clearButton = document.createElement("button");
+      clearButton.type = "button";
+      clearButton.textContent = "Clear search";
+      clearButton.addEventListener("click", clearSessionsSearch);
+      emptyMessage.appendChild(clearButton);
+
+      emptyCell.appendChild(emptyMessage);
+      emptyRow.appendChild(emptyCell);
+      el.sessionsTbody.appendChild(emptyRow);
+      return;
+    }
+
     const fragment = document.createDocumentFragment();
 
     visibleSessions.forEach((session) => {

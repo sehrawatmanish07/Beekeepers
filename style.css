@@ -579,6 +579,102 @@ html, body {
   margin-top: 2px;
 }
 
+.session-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 1 360px;
+  min-width: 220px;
+  height: 44px;
+  margin-left: auto;
+  background-color: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.session-search:hover,
+.session-search:focus-within {
+  border-color: var(--accent-teal);
+  box-shadow: 0 0 0 2px rgba(45, 212, 191, 0.16);
+}
+
+.session-search-icon {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  margin-left: 12px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.session-search input {
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  padding: 0 8px;
+  color: var(--text-main);
+  background: transparent;
+  border: 0;
+  outline: 0;
+  font-family: var(--font-sans);
+  font-size: 12px;
+}
+
+.session-search input::placeholder {
+  color: var(--text-dim);
+  opacity: 1;
+}
+
+.session-search-clear {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  margin-right: 5px;
+  padding: 0;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font: inherit;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.session-search-clear:hover {
+  color: var(--accent-teal);
+  background: var(--accent-teal-bg);
+}
+
+.session-search-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 18px 12px;
+  color: var(--text-muted);
+  text-align: center;
+  white-space: normal;
+}
+
+.session-search-empty button {
+  padding: 4px 8px;
+  color: var(--accent-teal);
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.session-search-empty button:hover {
+  border-color: var(--accent-teal);
+  box-shadow: 0 0 10px rgba(45, 212, 191, 0.2);
+}
+
 /* Empty State */
 .empty-state {
   display: flex;
@@ -1374,6 +1470,27 @@ html, body {
 @media (max-width: 480px) {
   .login-card {
     padding: 24px 18px;
+  }
+
+  .table-panel .panel-header {
+    flex-wrap: wrap;
+    align-items: stretch;
+  }
+
+  .table-panel .panel-header > div:first-child {
+    flex: 0 0 100%;
+  }
+
+  .session-search {
+    order: 2;
+    flex: 0 0 100%;
+    min-width: 0;
+    margin-left: 0;
+  }
+
+  .table-panel .table-meta-info {
+    order: 3;
+    margin-left: auto;
   }
 
   .brand-title-wrap {

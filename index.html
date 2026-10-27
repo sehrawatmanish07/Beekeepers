@@ -457,6 +457,14 @@
               <h2>Attacker Sessions</h2>
               <p class="panel-subtitle">Detailed telemetry logs, click any row to inspect replay and credentials</p>
             </div>
+            <div class="session-search" role="search">
+              <svg class="session-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <circle cx="11" cy="11" r="7"></circle>
+                <path d="m20 20-4-4"></path>
+              </svg>
+              <input id="session-search-input" type="text" aria-label="Search sessions by IP address" placeholder="Search by IP address, e.g. 192.168.100" autocomplete="off" spellcheck="false">
+              <button id="session-search-clear" class="session-search-clear hidden" type="button" aria-label="Clear search">×</button>
+            </div>
             <div class="table-meta-info" id="table-record-count">Showing —</div>
           </div>
 
