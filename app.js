@@ -25,6 +25,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   let inFlightRequest = false;
   let secondsRemaining = 15;
   let lastDashboardData = null;
+  let pdfStatusTimerId = null;
   let currentSortColumn = "risk_score";
   let currentSortAsc = false;
   let sessionsDisplayLimit = 100;
@@ -55,6 +56,8 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     loginInfo: document.getElementById("login-info"),
     backendWarning: document.getElementById("backend-warning"),
     logoutBtn: document.getElementById("logout-btn"),
+    exportPdfBtn: document.getElementById("export-pdf-btn"),
+    pdfExportStatus: document.getElementById("pdf-export-status"),
     toggleMascotBtn: document.getElementById("toggle-mascot-btn"),
     toggleMascotLabel: document.getElementById("toggle-mascot-label"),
     countdownProgress: document.getElementById("countdown-progress"),
@@ -462,6 +465,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     sessionStorage.removeItem(TOKEN_KEY);
     stopPolling();
     lastDashboardData = null;
+    el.exportPdfBtn.disabled = true;
 
     el.dashboardView.classList.add("hidden");
     el.loginView.classList.remove("hidden");
@@ -640,6 +644,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
       const data = await res.json();
       lastDashboardData = data;
+      el.exportPdfBtn.disabled = !Array.isArray(data.sessions);
       el.connectionBanner.classList.add("hidden");
 
       renderDashboard(data);
@@ -1149,6 +1154,18 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
         responsive: true,
         maintainAspectRatio: false,
         animation: { duration: 800 },
+        onHover: (event, activeElements) => {
+          el.topIpsCanvas.style.cursor = activeElements.length ? "pointer" : "default";
+        },
+        onClick: (event, activeElements) => {
+          if (!activeElements.length || !topIpsChart) return;
+          const ip = topIpsChart.data.labels[activeElements[0].index];
+          try {
+            exportIpPdf(ip);
+          } catch (error) {
+            showPdfExportStatus("Could not generate the PDF. Please try again.", true);
+          }
+        },
         plugins: {
           legend: { display: false },
           tooltip: {
@@ -1157,7 +1174,10 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
             bodyColor: "#2dd4bf",
             borderColor: "#1f2d46",
             borderWidth: 1,
-            padding: 10
+            padding: 10,
+            callbacks: {
+              afterBody: () => ["Click to download PDF"]
+            }
           }
         },
         scales: {
@@ -1649,11 +1669,342 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   }
 
   /* ==========================================================================
+     PDF EXPORT
+     ========================================================================== */
+  function showPdfExportStatus(message, persistent = false) {
+    if (!el.pdfExportStatus) return;
+    clearTimeout(pdfStatusTimerId);
+    el.pdfExportStatus.textContent = message;
+    if (!persistent) {
+      pdfStatusTimerId = setTimeout(() => {
+        el.pdfExportStatus.textContent = "";
+      }, 4500);
+    }
+  }
+
+  function getPdfLibrary() {
+    if (typeof window.jspdf === "undefined" || !window.jspdf.jsPDF) return null;
+    const doc = new window.jspdf.jsPDF({ format: "a4", unit: "mm", orientation: "portrait" });
+    return typeof doc.autoTable === "function" ? doc : null;
+  }
+
+  function pdfString(value, fallback = "—") {
+    return value === null || value === undefined || value === "" ? fallback : String(value);
+  }
+
+  function pdfLocalTime(value) {
+    if (!value) return "—";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
+  }
+
+  function pdfDateStamp(date = new Date()) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  function pdfRiskLevel(value) {
+    const level = String(value || "low").toLowerCase();
+    if (level === "medium") return "Medium";
+    if (level === "high") return "High";
+    if (level === "critical") return "Critical";
+    return "Low";
+  }
+
+  function pdfRiskColor(value) {
+    switch (pdfRiskLevel(value)) {
+      case "Medium": return [202, 138, 4];
+      case "High": return [234, 88, 12];
+      case "Critical": return [220, 38, 38];
+      default: return [22, 163, 74];
+    }
+  }
+
+  function sessionsForPdf() {
+    return lastDashboardData && Array.isArray(lastDashboardData.sessions)
+      ? lastDashboardData.sessions
+      : [];
+  }
+
+  function summarizePdfSessions(sessions) {
+    const risks = ["Low", "Medium", "High", "Critical"];
+    let highestRisk = "Low";
+    let firstSeen = null;
+    let lastSeen = null;
+
+    sessions.forEach((session) => {
+      const risk = pdfRiskLevel(session.risk_level);
+      if (risks.indexOf(risk) > risks.indexOf(highestRisk)) highestRisk = risk;
+      const date = new Date(session.start_time);
+      if (!Number.isNaN(date.getTime())) {
+        if (!firstSeen || date < firstSeen) firstSeen = date;
+        if (!lastSeen || date > lastSeen) lastSeen = date;
+      }
+    });
+
+    return {
+      highestRisk,
+      firstSeen: firstSeen ? firstSeen.toLocaleString() : "—",
+      lastSeen: lastSeen ? lastSeen.toLocaleString() : "—"
+    };
+  }
+
+  function sortPdfSessions(sessions) {
+    return [...sessions].sort((a, b) => {
+      const timeA = new Date(a.start_time).getTime();
+      const timeB = new Date(b.start_time).getTime();
+      const validA = Number.isNaN(timeA) ? -Infinity : timeA;
+      const validB = Number.isNaN(timeB) ? -Infinity : timeB;
+      return validB - validA;
+    });
+  }
+
+  function addPdfHeader(doc, title, generatedAt) {
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const margin = 14;
+    doc.setTextColor(25, 35, 48);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(16);
+    const titleLines = doc.splitTextToSize(title, pageWidth - margin * 2);
+    doc.text(titleLines, margin, 18);
+
+    let y = 18 + titleLines.length * 7;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.text(`Generated: ${generatedAt.toLocaleString()}`, margin, y);
+    y += 5;
+    doc.text("Contains sensitive data. Handle with care.", margin, y);
+    return y + 8;
+  }
+
+  function addPdfSummaryTable(doc, title, rows, startY) {
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    doc.setTextColor(25, 35, 48);
+    doc.text(title, 14, startY);
+    doc.autoTable({
+      startY: startY + 3,
+      head: [["Field", "Value"]],
+      body: rows,
+      theme: "grid",
+      margin: { left: 14, right: 14, bottom: 18 },
+      styles: { font: "helvetica", fontSize: 9, textColor: [35, 42, 52], overflow: "linebreak", cellPadding: 2 },
+      headStyles: { fillColor: [230, 235, 242], textColor: [25, 35, 48] },
+      rowPageBreak: "auto"
+    });
+    return doc.lastAutoTable.finalY + 9;
+  }
+
+  function writePdfParagraph(doc, text, y, color = [35, 42, 52], fontSize = 9) {
+    const margin = 14;
+    const width = doc.internal.pageSize.getWidth() - margin * 2;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(fontSize);
+    doc.setTextColor(...color);
+    const lines = doc.splitTextToSize(String(text), width);
+    const lineHeight = 4.5;
+    if (y + lines.length * lineHeight > doc.internal.pageSize.getHeight() - 18) {
+      doc.addPage();
+      y = 16;
+    }
+    doc.text(lines, margin, y);
+    return y + lines.length * lineHeight + 2;
+  }
+
+  function addPdfSessions(doc, sessions, startY) {
+    let y = startY;
+    const sortedSessions = sortPdfSessions(sessions);
+
+    sortedSessions.forEach((session) => {
+      const risk = pdfRiskLevel(session.risk_level);
+      const heading = `Session ${pdfString(session.session_id)} | ${pdfLocalTime(session.start_time)}`;
+      const headingLines = doc.splitTextToSize(heading, doc.internal.pageSize.getWidth() - 28);
+      if (y + headingLines.length * 5 + 13 > doc.internal.pageSize.getHeight() - 18) {
+        doc.addPage();
+        y = 16;
+      }
+      doc.setDrawColor(...pdfRiskColor(risk));
+      doc.setLineWidth(0.8);
+      doc.line(14, y - 2, 20, y - 2);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.setTextColor(25, 35, 48);
+      doc.text(headingLines, 22, y);
+      y += headingLines.length * 5 + 1;
+      y = writePdfParagraph(
+        doc,
+        `Risk score: ${pdfString(session.risk_score, "0")} | Risk level: ${risk}`,
+        y,
+        [35, 42, 52]
+      );
+
+      const commands = Array.isArray(session.commands) ? session.commands : [];
+      doc.autoTable({
+        startY: y,
+        head: [["Commands (in order)"]],
+        body: commands.length ? commands.map((command) => [pdfString(command, "")]) : [["No commands were run"]],
+        theme: "grid",
+        margin: { left: 14, right: 14, bottom: 18 },
+        styles: { font: "helvetica", fontSize: 9, textColor: [35, 42, 52], overflow: "linebreak", cellPadding: 2 },
+        headStyles: { fillColor: [230, 235, 242], textColor: [25, 35, 48] },
+        rowPageBreak: "auto"
+      });
+      y = doc.lastAutoTable.finalY + 3;
+
+      const attempts = Array.isArray(session.login_attempts) ? session.login_attempts : [];
+      doc.autoTable({
+        startY: y,
+        head: [["Username", "Password", "Result", "Time"]],
+        body: attempts.length
+          ? attempts.map((attempt) => [
+            pdfString(attempt.username),
+            pdfString(attempt.password),
+            attempt.success === true ? "Success" : "Failed",
+            pdfLocalTime(attempt.timestamp)
+          ])
+          : [["No login attempts recorded", "", "", ""]],
+        theme: "grid",
+        margin: { left: 14, right: 14, bottom: 18 },
+        styles: { font: "helvetica", fontSize: 9, textColor: [35, 42, 52], overflow: "linebreak", cellPadding: 2 },
+        headStyles: { fillColor: [230, 235, 242], textColor: [25, 35, 48] },
+        rowPageBreak: "auto"
+      });
+      y = doc.lastAutoTable.finalY + 9;
+    });
+
+    return y;
+  }
+
+  function finishPdf(doc, filename) {
+    const pageCount = doc.internal.getNumberOfPages();
+    for (let page = 1; page <= pageCount; page += 1) {
+      doc.setPage(page);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(90, 98, 108);
+      doc.text(
+        `Report generated from the sessions available in the dashboard at export time.  |  Page ${page} of ${pageCount}`,
+        14,
+        doc.internal.pageSize.getHeight() - 8
+      );
+    }
+    doc.save(filename);
+  }
+
+  function createAllIpsPdf(sessions) {
+    const doc = getPdfLibrary();
+    if (!doc) {
+      showPdfExportStatus("Could not load the PDF tool. Please check your connection.", true);
+      return;
+    }
+
+    const generatedAt = new Date();
+    const groups = new Map();
+    sessions.forEach((session) => {
+      const ip = typeof session.src_ip === "string" ? session.src_ip : "";
+      if (!groups.has(ip)) groups.set(ip, []);
+      groups.get(ip).push(session);
+    });
+
+    const ipGroups = Array.from(groups.entries())
+      .map(([ip, ipSessions]) => ({ ip, sessions: ipSessions, summary: summarizePdfSessions(ipSessions) }))
+      .sort((a, b) => b.sessions.length - a.sessions.length || a.ip.localeCompare(b.ip));
+
+    let y = addPdfHeader(doc, "Honeypot Attack Report: All IPs", generatedAt);
+    y = addPdfSummaryTable(doc, "Summary", [
+      ["Total IPs", String(ipGroups.length)],
+      ["Total sessions", String(sessions.length)]
+    ], y);
+
+    doc.autoTable({
+      startY: y,
+      head: [["IP", "Sessions", "Highest risk", "First seen", "Last seen"]],
+      body: ipGroups.map((group) => [
+        group.ip || "Unknown IP",
+        String(group.sessions.length),
+        group.summary.highestRisk,
+        group.summary.firstSeen,
+        group.summary.lastSeen
+      ]),
+      theme: "grid",
+      margin: { left: 14, right: 14, bottom: 18 },
+      styles: { font: "helvetica", fontSize: 9, textColor: [35, 42, 52], overflow: "linebreak", cellPadding: 2 },
+      headStyles: { fillColor: [230, 235, 242], textColor: [25, 35, 48] },
+      rowPageBreak: "auto"
+    });
+
+    ipGroups.forEach((group) => {
+      doc.addPage();
+      const sectionY = addPdfHeader(doc, `IP: ${group.ip || "Unknown IP"}`, generatedAt);
+      doc.setDrawColor(...pdfRiskColor(group.summary.highestRisk));
+      doc.setLineWidth(1);
+      doc.line(14, sectionY - 3, 22, sectionY - 3);
+      addPdfSessions(doc, group.sessions, sectionY + 3);
+    });
+
+    finishPdf(doc, `honeypot-report-all-ips-${pdfDateStamp(generatedAt)}.pdf`);
+  }
+
+  function exportIpPdf(ip) {
+    if (!lastDashboardData || !Array.isArray(lastDashboardData.sessions)) {
+      showPdfExportStatus("No attack data to export yet.");
+      return;
+    }
+    const sessions = sessionsForPdf().filter((session) => session.src_ip === ip);
+    if (!sessions.length) {
+      showPdfExportStatus("No attack data to export yet.");
+      return;
+    }
+
+    const doc = getPdfLibrary();
+    if (!doc) {
+      showPdfExportStatus("Could not load the PDF tool. Please check your connection.", true);
+      return;
+    }
+
+    const generatedAt = new Date();
+    const summary = summarizePdfSessions(sessions);
+    let y = addPdfHeader(doc, `Honeypot Attack Report: ${ip}`, generatedAt);
+    y = addPdfSummaryTable(doc, "Summary", [
+      ["IP", ip],
+      ["Number of sessions", String(sessions.length)],
+      ["Highest risk level", summary.highestRisk],
+      ["First seen", summary.firstSeen],
+      ["Last seen", summary.lastSeen]
+    ], y);
+    addPdfSessions(doc, sessions, y);
+
+    const safeIp = String(ip).replace(/[^A-Za-z0-9.-]/g, "_");
+    finishPdf(doc, `honeypot-report-${safeIp}-${pdfDateStamp(generatedAt)}.pdf`);
+  }
+
+  function initPdfExport() {
+    if (document.documentElement.dataset.pdfToolUnavailable === "true" || !getPdfLibrary()) {
+      showPdfExportStatus("Could not load the PDF tool. Please check your connection.", true);
+    }
+    el.exportPdfBtn.addEventListener("click", () => {
+      const sessions = sessionsForPdf();
+      if (!sessions.length) {
+        showPdfExportStatus("No attack data to export yet.");
+        return;
+      }
+      try {
+        createAllIpsPdf(sessions);
+      } catch (error) {
+        showPdfExportStatus("Could not generate the PDF. Please try again.", true);
+      }
+    });
+  }
+
+  /* ==========================================================================
      INITIALIZATION ON DOMContentLoaded
      ========================================================================== */
   document.addEventListener("DOMContentLoaded", () => {
     initMascot();
     initNavigation();
+    initPdfExport();
     initAuth();
   });
 })();

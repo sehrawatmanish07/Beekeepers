@@ -1407,3 +1407,58 @@ html, body {
     animation: none !important;
   }
 }
+
+/* PDF export additions */
+.header-controls {
+  position: relative;
+}
+
+.pdf-export-button {
+  min-height: 34px;
+  white-space: nowrap;
+}
+
+.pdf-export-status {
+  display: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 101;
+  max-width: min(260px, calc(100vw - 24px));
+  padding: 8px 10px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.pdf-export-status:not(:empty) {
+  display: block;
+}
+
+.pdf-export-hint {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+@media (max-width: 768px) {
+  .header-controls {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 8px;
+  }
+
+  .pdf-export-button {
+    min-height: 44px;
+  }
+
+  .pdf-export-status {
+    position: static;
+    flex-basis: 100%;
+    max-width: none;
+  }
+}

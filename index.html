@@ -13,6 +13,8 @@
 
   <!-- Chart.js pinned to exact required version -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" onerror="document.documentElement.dataset.pdfToolUnavailable='true'"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js" onerror="document.documentElement.dataset.pdfToolUnavailable='true'"></script>
 
   <link rel="stylesheet" href="style.css">
   <script src="app.js" defer></script>
@@ -158,6 +160,16 @@
           </svg>
           <span id="countdown-text" class="countdown-text">15s</span>
         </div>
+
+        <button id="export-pdf-btn" class="btn btn-secondary btn-sm pdf-export-button" type="button" disabled>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          <span>Export PDF</span>
+        </button>
+        <span id="pdf-export-status" class="pdf-export-status" role="status" aria-live="polite"></span>
 
         <!-- Mascot Toggle -->
         <button id="toggle-mascot-btn" class="btn btn-ghost btn-sm" aria-label="Toggle Kiko Mascot" title="Toggle Kiko">
@@ -404,6 +416,7 @@
               <div>
                 <h2>Top Attacking IPs</h2>
                 <p class="panel-subtitle">Most active adversarial source hosts</p>
+                <p class="pdf-export-hint">Click a bar to download that IP's full attack report (PDF)</p>
               </div>
             </div>
             <div class="panel-body chart-body-wrapper">
