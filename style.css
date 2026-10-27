@@ -70,7 +70,7 @@ html, body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 /* Focus visibility for accessibility */
@@ -1014,10 +1014,15 @@ html, body {
 
 .map-marker {
   cursor: pointer;
+}
+
+.map-marker-scale {
+  transform-box: fill-box;
+  transform-origin: center;
   transition: transform var(--transition-fast);
 }
 
-.map-marker:hover {
+.map-marker:hover .map-marker-scale {
   transform: scale(1.4);
 }
 

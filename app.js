@@ -27,7 +27,8 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
   // Global State
   let countdownTimerId = null;
-  let inFlightRequest = false;
+  let loginRequestInFlight = false;
+  let dashboardRequestInFlight = false;
   let secondsRemaining = 15;
   let lastDashboardData = null;
   let pdfStatusTimerId = null;
@@ -52,6 +53,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   // DOM Elements
   const el = {
     connectionBanner: document.getElementById("connection-banner"),
+    connectionBannerText: document.getElementById("connection-banner-text"),
     mapOverlayText: document.getElementById("map-overlay-text"),
     loginView: document.getElementById("login-view"),
     dashboardView: document.getElementById("dashboard-view"),
@@ -378,20 +380,18 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
       return;
     }
 
+    el.loginForm.addEventListener("submit", handleLoginSubmit);
+
     // Auto-login if token already in sessionStorage
     const existingToken = sessionStorage.getItem(TOKEN_KEY);
     if (existingToken) {
       showDashboardView();
-      return;
     }
-
-    // Setup form listener
-    el.loginForm.addEventListener("submit", handleLoginSubmit);
   }
 
   async function handleLoginSubmit(e) {
     e.preventDefault();
-    if (inFlightRequest || IS_PLACEHOLDER) return;
+    if (loginRequestInFlight || IS_PLACEHOLDER) return;
 
     hideLoginAlerts();
     setKikoMouth(false);
@@ -405,7 +405,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     }
 
     // Disable button and prevent double submit
-    inFlightRequest = true;
+    loginRequestInFlight = true;
     el.loginBtn.disabled = true;
     el.loginBtnSpinner.classList.remove("hidden");
     el.loginBtnText.textContent = "Connecting...";
@@ -415,7 +415,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
     // After 5s, notify user about cold server wakeup
     const wakeupTimer = setTimeout(() => {
-      if (inFlightRequest) {
+      if (loginRequestInFlight) {
         showLoginInfo("The server may be waking up, this can take up to a minute");
       }
     }, 5000);
@@ -457,7 +457,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
       clearTimeout(wakeupTimer);
       showLoginError("Cannot reach the server. Please try again.");
     } finally {
-      inFlightRequest = false;
+      loginRequestInFlight = false;
       el.loginBtn.disabled = false;
       el.loginBtnSpinner.classList.add("hidden");
       el.loginBtnText.textContent = "Log in";
@@ -685,7 +685,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
      DATA FETCHING & ERROR HANDLING
      ========================================================================== */
   async function fetchDashboardData(isFirstLoad = false) {
-    if (inFlightRequest) return;
+    if (dashboardRequestInFlight) return;
 
     const token = sessionStorage.getItem(TOKEN_KEY);
     if (!token) {
@@ -693,11 +693,15 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
       return;
     }
 
-    inFlightRequest = true;
+    dashboardRequestInFlight = true;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    let data;
 
     try {
       const res = await fetch(`${API_BASE}/api/dashboard`, {
         method: "GET",
+        signal: controller.signal,
         headers: {
           "Authorization": `Bearer ${token}`
         }
@@ -712,17 +716,28 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
         throw new Error(`Server returned ${res.status}`);
       }
 
-      const data = await res.json();
-      lastDashboardData = data;
-      el.exportPdfBtn.disabled = !data || !Array.isArray(data.sessions);
-      hideConnectionBanner();
+      data = await res.json();
+    } catch (err) {
+      el.connectionBannerText.textContent = controller.signal.aborted
+        ? "Dashboard request timed out, retrying..."
+        : "Connection lost, retrying...";
+      showConnectionBanner();
+      return;
+    } finally {
+      clearTimeout(timeoutId);
+      dashboardRequestInFlight = false;
+    }
 
+    lastDashboardData = data;
+    el.exportPdfBtn.disabled = !data || !Array.isArray(data.sessions);
+    hideConnectionBanner();
+
+    try {
       renderDashboard(data);
     } catch (err) {
-      // Keep showing last data, show small banner "Connection lost, retrying..."
+      console.error("Dashboard rendering failed.", err);
+      el.connectionBannerText.textContent = "Dashboard data loaded, but some panels could not be displayed.";
       showConnectionBanner();
-    } finally {
-      inFlightRequest = false;
     }
   }
 
@@ -743,6 +758,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   function hideConnectionBanner() {
     el.connectionBanner.classList.add("hidden");
     el.connectionBanner.style.top = "";
+    el.connectionBannerText.textContent = "Connection lost, retrying...";
   }
 
   /* ==========================================================================
@@ -751,14 +767,30 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   function renderDashboard(data) {
     if (!data || typeof data !== "object") return;
 
-    renderStats(data.stats);
-    renderTimelineChart(data.timeline);
-    renderRiskDonutChart(data.risk_distribution);
-    renderLiveFeed(data.sessions);
-    renderAttackMap(data.sessions);
-    renderTopIpsChart(data.top_ips);
-    renderTopCommandsChart(data.top_commands);
-    renderSessionsTable(data.sessions);
+    const renderers = [
+      ["statistics", () => renderStats(data.stats)],
+      ["attack timeline", () => renderTimelineChart(data.timeline)],
+      ["risk chart", () => renderRiskDonutChart(data.risk_distribution)],
+      ["live feed", () => renderLiveFeed(data.sessions)],
+      ["attack map", () => renderAttackMap(data.sessions)],
+      ["top IPs chart", () => renderTopIpsChart(data.top_ips)],
+      ["top commands chart", () => renderTopCommandsChart(data.top_commands)],
+      ["sessions table", () => renderSessionsTable(data.sessions)]
+    ];
+    let firstRenderError = null;
+
+    renderers.forEach(([name, render]) => {
+      try {
+        render();
+      } catch (err) {
+        console.error(`Failed to render ${name}.`, err);
+        if (!firstRenderError) firstRenderError = err;
+      }
+    });
+
+    if (firstRenderError) {
+      throw new Error("One or more dashboard panels failed to render.");
+    }
   }
 
   /* 1. Stat Cards Animated Counters */
@@ -1154,6 +1186,8 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
       const group = document.createElementNS(ns, "g");
       group.setAttribute("class", "map-marker");
       group.setAttribute("transform", `translate(${x.toFixed(1)}, ${y.toFixed(1)})`);
+      const markerScale = document.createElementNS(ns, "g");
+      markerScale.setAttribute("class", "map-marker-scale");
 
       // Outer pulsing ripple
       const pulseCircle = document.createElementNS(ns, "circle");
@@ -1173,8 +1207,9 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
       coreCircle.setAttribute("stroke", "#ffffff");
       coreCircle.setAttribute("stroke-width", "1.2");
 
-      group.appendChild(pulseCircle);
-      group.appendChild(coreCircle);
+      markerScale.appendChild(pulseCircle);
+      markerScale.appendChild(coreCircle);
+      group.appendChild(markerScale);
 
       // Tooltip interaction
       group.addEventListener("mouseenter", (e) => {
