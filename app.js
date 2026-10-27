@@ -18,9 +18,14 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   // Storage Keys
   const TOKEN_KEY = "dashboard_token";
   const KIKO_HIDDEN_KEY = "kiko_mascot_hidden";
+  const DEMO_MAP_MARKERS = [
+    { ip: "203.0.113.10", risk: "high", lat: 37.7749, lng: -122.4194 },
+    { ip: "198.51.100.24", risk: "medium", lat: 52.52, lng: 13.405 },
+    { ip: "192.0.2.45", risk: "critical", lat: 1.3521, lng: 103.8198 },
+    { ip: "203.0.113.87", risk: "low", lat: -31.9505, lng: 115.8605 }
+  ];
 
   // Global State
-  let pollIntervalId = null;
   let countdownTimerId = null;
   let inFlightRequest = false;
   let secondsRemaining = 15;
@@ -35,6 +40,8 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   let animatedSessionIds = new Set();
   let isKikoSad = false;
   let kikoBubbleTimer = null;
+  let pupilTrackingFrameId = null;
+  let latestMousePosition = null;
 
   // Chart References
   let timelineChart = null;
@@ -45,6 +52,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   // DOM Elements
   const el = {
     connectionBanner: document.getElementById("connection-banner"),
+    mapOverlayText: document.getElementById("map-overlay-text"),
     loginView: document.getElementById("login-view"),
     dashboardView: document.getElementById("dashboard-view"),
     loginForm: document.getElementById("login-form"),
@@ -245,7 +253,15 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
     // Mouse tracking for pupils
     window.addEventListener("mousemove", (e) => {
-      trackPupils(e.clientX, e.clientY);
+      latestMousePosition = { x: e.clientX, y: e.clientY };
+      if (pupilTrackingFrameId === null) {
+        pupilTrackingFrameId = window.requestAnimationFrame(() => {
+          pupilTrackingFrameId = null;
+          if (latestMousePosition) {
+            trackPupils(latestMousePosition.x, latestMousePosition.y);
+          }
+        });
+      }
     });
 
     // Hover on Mascot pops bubble immediately
@@ -480,7 +496,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
     el.dashboardView.classList.add("hidden");
     el.loginView.classList.remove("hidden");
-    el.connectionBanner.classList.add("hidden");
+    hideConnectionBanner();
 
     hideLoginAlerts();
     if (message) {
@@ -514,6 +530,8 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
   function initNavigation() {
     window.addEventListener("hashchange", handleHashRouting);
+    window.addEventListener("resize", positionConnectionBanner);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     el.sessionSearchInput.addEventListener("input", () => {
       el.sessionSearchClear.classList.toggle("hidden", el.sessionSearchInput.value.length === 0);
@@ -620,6 +638,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
      ========================================================================== */
   function startPolling() {
     stopPolling();
+    if (document.hidden) return;
     secondsRemaining = 15;
     updateCountdownUI(15);
 
@@ -636,10 +655,19 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   }
 
   function stopPolling() {
-    clearInterval(pollIntervalId);
     clearInterval(countdownTimerId);
-    pollIntervalId = null;
     countdownTimerId = null;
+  }
+
+  function handleVisibilityChange() {
+    if (el.dashboardView.classList.contains("hidden")) return;
+    if (document.hidden) {
+      stopPolling();
+      return;
+    }
+
+    fetchDashboardData(false);
+    startPolling();
   }
 
   function updateCountdownUI(sec) {
@@ -687,15 +715,34 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
       const data = await res.json();
       lastDashboardData = data;
       el.exportPdfBtn.disabled = !data || !Array.isArray(data.sessions);
-      el.connectionBanner.classList.add("hidden");
+      hideConnectionBanner();
 
       renderDashboard(data);
     } catch (err) {
       // Keep showing last data, show small banner "Connection lost, retrying..."
-      el.connectionBanner.classList.remove("hidden");
+      showConnectionBanner();
     } finally {
       inFlightRequest = false;
     }
+  }
+
+  function positionConnectionBanner() {
+    if (el.connectionBanner.classList.contains("hidden")) return;
+    const header = el.dashboardView.querySelector(".console-header");
+    const top = el.dashboardView.classList.contains("hidden")
+      ? 0
+      : header.getBoundingClientRect().bottom;
+    el.connectionBanner.style.top = `${Math.max(0, top)}px`;
+  }
+
+  function showConnectionBanner() {
+    el.connectionBanner.classList.remove("hidden");
+    positionConnectionBanner();
+  }
+
+  function hideConnectionBanner() {
+    el.connectionBanner.classList.add("hidden");
+    el.connectionBanner.style.top = "";
   }
 
   /* ==========================================================================
@@ -1065,33 +1112,41 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   function renderAttackMap(sessions) {
     el.mapMarkersLayer.textContent = "";
 
-    const validMarkers = [];
+    const markersByIp = new Map();
+    const riskRank = { low: 1, medium: 2, high: 3, critical: 4 };
 
     if (Array.isArray(sessions)) {
       sessions.forEach((s) => {
         const lat = Number(s.latitude);
         const lng = Number(s.longitude);
-        if (!isNaN(lat) && !isNaN(lng) && typeof s.latitude === "number" && typeof s.longitude === "number") {
-          validMarkers.push({
-            ip: String(s.src_ip || "Unknown IP"),
-            risk: String(s.risk_level || "low"),
-            lat: lat,
-            lng: lng
-          });
+        if (Number.isFinite(lat) && Number.isFinite(lng) &&
+            lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180 &&
+            typeof s.latitude === "number" && typeof s.longitude === "number") {
+          const ip = String(s.src_ip || "Unknown IP");
+          const risk = String(s.risk_level || "low").toLowerCase();
+          const marker = markersByIp.get(ip);
+          if (!marker) {
+            markersByIp.set(ip, { ip, risk, lat, lng, isDemo: false });
+          } else if ((riskRank[risk] || 0) > (riskRank[marker.risk] || 0)) {
+            marker.risk = risk;
+          }
         }
       });
     }
 
-    if (validMarkers.length === 0) {
+    if (markersByIp.size === 0) {
+      DEMO_MAP_MARKERS.forEach((marker) => {
+        markersByIp.set(marker.ip, { ...marker, isDemo: true });
+      });
+      el.mapOverlayText.textContent = "Sample locations shown for demonstration. Live location data is unavailable.";
       el.mapOverlay.classList.remove("hidden");
-      return;
+    } else {
+      el.mapOverlay.classList.add("hidden");
     }
-
-    el.mapOverlay.classList.add("hidden");
 
     const ns = "http://www.w3.org/2000/svg";
 
-    validMarkers.forEach((m) => {
+    markersByIp.forEach((m) => {
       // Equirectangular projection into 1000x500
       const x = ((m.lng + 180) / 360) * 1000;
       const y = ((90 - m.lat) / 180) * 500;
@@ -1124,7 +1179,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
       // Tooltip interaction
       group.addEventListener("mouseenter", (e) => {
         el.tooltipIp.textContent = m.ip;
-        el.tooltipRisk.textContent = `Risk Level: ${m.risk}`;
+        el.tooltipRisk.textContent = `Risk Level: ${m.risk}${m.isDemo ? " (sample)" : ""}`;
         el.mapTooltip.classList.remove("hidden");
 
         const rect = el.mapTooltip.parentElement.getBoundingClientRect();
@@ -1329,6 +1384,11 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
   /* 8. Sessions Table with Sorting, Expanding Rows, Typewriter Replay & Attempts */
   function renderSessionsTable(sessions) {
+    const focusedRow = el.sessionsTbody.contains(document.activeElement)
+      ? document.activeElement.closest(".session-row")
+      : null;
+    const focusedSessionId = focusedRow ? focusedRow.dataset.sessionId : null;
+
     if (!Array.isArray(sessions)) {
       el.tableEmpty.classList.remove("hidden");
       el.sessionsTbody.textContent = "";
@@ -1398,6 +1458,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
       // Main session row
       const tr = document.createElement("tr");
       tr.className = `session-row risk-tint-${riskLevel}`;
+      tr.dataset.sessionId = sid;
       if (isExpanded) tr.classList.add("expanded");
       tr.tabIndex = 0;
       tr.setAttribute("role", "button");
@@ -1469,6 +1530,11 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     });
 
     el.sessionsTbody.appendChild(fragment);
+    if (focusedSessionId !== null) {
+      const restoredRow = Array.from(el.sessionsTbody.querySelectorAll(".session-row"))
+        .find((row) => row.dataset.sessionId === focusedSessionId);
+      if (restoredRow) restoredRow.focus();
+    }
   }
 
   function sortSessionsList(sessions, column, asc) {
@@ -1484,7 +1550,9 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
         case "src_ip":
           valA = String(a.src_ip || "");
           valB = String(b.src_ip || "");
-          return asc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+          return asc
+            ? valA.localeCompare(valB, undefined, { numeric: true })
+            : valB.localeCompare(valA, undefined, { numeric: true });
 
         case "risk_score":
           valA = Number(a.risk_score || 0);
@@ -1685,6 +1753,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     let currentTextSpan = null;
 
     function nextChar() {
+      if (!container.isConnected) return;
       if (cmdIdx >= commands.length) {
         if (currentLine && !currentLine.contains(cursor)) {
           currentLine.appendChild(cursor);
@@ -1724,7 +1793,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
       }
     }
 
-    nextChar();
+    window.requestAnimationFrame(nextChar);
   }
 
   /* Helper: Format Timestamp to Local Time */

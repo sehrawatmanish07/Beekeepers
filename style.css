@@ -22,7 +22,6 @@
   --bg-panel-elevated: #162238;
   --bg-input: #0c1424;
   --border-subtle: #1f2d46;
-  --border-glow: #2dd4bf40;
   
   --text-main: #e6edf7;
   --text-muted: #8fa3c0;
@@ -91,7 +90,7 @@ html, body {
   top: 0;
   left: 0;
   right: 0;
-  z-index: 9999;
+  z-index: 99;
   background: rgba(248, 113, 113, 0.95);
   color: #0b101c;
   font-weight: 600;
@@ -536,7 +535,7 @@ html, body {
 
 .tab-pane {
   display: none;
-  animation: fadeIn 0.3s ease forwards;
+  animation: fadeIn 0.3s ease;
 }
 
 .tab-pane.active {
@@ -720,9 +719,14 @@ html, body {
 }
 
 .stat-card:hover {
+  z-index: 101;
   transform: translateY(-2px);
   border-color: var(--accent-teal);
   box-shadow: 0 8px 24px rgba(45, 212, 191, 0.15);
+}
+
+.stat-card:focus {
+  z-index: 101;
 }
 
 .stat-card.stat-critical {
@@ -1309,6 +1313,12 @@ html, body {
   animation: kikoFloat 4s ease-in-out infinite;
 }
 
+.kiko-eyes {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: kikoBlink 5.2s infinite;
+}
+
 .kiko-antenna {
   transform-origin: 50px 30px;
   animation: antennaWiggle 3.5s ease-in-out infinite;
@@ -1377,6 +1387,11 @@ html, body {
 @keyframes blink {
   0%, 50% { opacity: 1; }
   51%, 100% { opacity: 0; }
+}
+
+@keyframes kikoBlink {
+  0%, 46%, 50%, 100% { transform: scaleY(1); }
+  48% { transform: scaleY(0.08); }
 }
 
 @keyframes kikoFloat {
@@ -1515,6 +1530,7 @@ html, body {
   }
 
   .kiko-floating,
+  .kiko-eyes,
   .kiko-antenna,
   .kiko-hair,
   .live-dot,
