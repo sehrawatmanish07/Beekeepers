@@ -43,6 +43,14 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   let kikoBubbleTimer = null;
   let pupilTrackingFrameId = null;
   let latestMousePosition = null;
+  let scoringRules = [];
+  let scoringRulesStatus = "idle";
+  let scoringRulesOpen = false;
+  let scoringRulesRequestInFlight = false;
+  let topToolsChart = null;
+  let activeIncidentReport = null;
+  let previousReportTitle = "";
+  let previousReportScrollY = 0;
 
   // Chart References
   let timelineChart = null;
@@ -112,6 +120,10 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     topIpsEmpty: document.getElementById("top-ips-empty"),
     topCommandsCanvas: document.getElementById("top-commands-chart"),
     topCommandsEmpty: document.getElementById("top-commands-empty"),
+    topToolsCanvas: document.getElementById("top-tools-chart"),
+    topToolsEmpty: document.getElementById("top-tools-empty"),
+    scoringRulesToggle: document.getElementById("scoring-rules-toggle"),
+    scoringRulesPanel: document.getElementById("scoring-rules-panel"),
     sessionsTable: document.getElementById("sessions-table"),
     sessionsTbody: document.getElementById("sessions-tbody"),
     tableEmpty: document.getElementById("table-empty"),
@@ -523,6 +535,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
     // Trigger initial data load
     fetchDashboardData(true);
+    fetchScoringRules();
 
     // Start auto-refresh polling loop
     startPolling();
@@ -555,6 +568,11 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
     if (el.logoutBtn) {
       el.logoutBtn.addEventListener("click", () => handleLogout());
+    }
+
+    if (el.scoringRulesToggle) {
+      el.scoringRulesToggle.addEventListener("click", toggleScoringRulesPanel);
+      el.scoringRulesToggle.setAttribute("aria-expanded", String(scoringRulesOpen));
     }
 
     // Sessions table sorting
@@ -761,6 +779,142 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     el.connectionBannerText.textContent = "Connection lost, retrying...";
   }
 
+  async function fetchScoringRules(forceRefresh = false) {
+    if (scoringRulesRequestInFlight) return;
+    if (!forceRefresh && scoringRulesStatus === "ready" && scoringRules.length > 0) {
+      renderScoringRulesPanel();
+      return;
+    }
+
+    scoringRulesRequestInFlight = true;
+
+    try {
+      const res = await fetch(`${API_BASE}/api/rules`, {
+        method: "GET",
+        headers: {
+          Accept: "application/json"
+        }
+      });
+
+      if (!res.ok) {
+        throw new Error(`Rules API returned ${res.status}`);
+      }
+
+      const data = await res.json();
+      scoringRules = Array.isArray(data) ? data : [];
+      scoringRulesStatus = "ready";
+      renderScoringRulesPanel();
+    } catch (err) {
+      scoringRules = [];
+      scoringRulesStatus = "error";
+      renderScoringRulesPanel();
+    } finally {
+      scoringRulesRequestInFlight = false;
+    }
+  }
+
+  function toggleScoringRulesPanel() {
+    scoringRulesOpen = !scoringRulesOpen;
+    if (el.scoringRulesToggle) {
+      el.scoringRulesToggle.setAttribute("aria-expanded", String(scoringRulesOpen));
+      el.scoringRulesToggle.classList.toggle("is-open", scoringRulesOpen);
+    }
+    renderScoringRulesPanel();
+  }
+
+  function renderScoringRulesPanel() {
+    if (!el.scoringRulesPanel) return;
+
+    el.scoringRulesPanel.classList.toggle("hidden", !scoringRulesOpen);
+    if (!scoringRulesOpen) {
+      el.scoringRulesPanel.textContent = "";
+      return;
+    }
+
+    el.scoringRulesPanel.textContent = "";
+
+    const note = document.createElement("div");
+    note.className = "rules-panel-note";
+    note.textContent = "Each session's risk score is the sum of the rules that matched.";
+    el.scoringRulesPanel.appendChild(note);
+
+    if (scoringRulesStatus === "error") {
+      const errorWrap = document.createElement("div");
+      errorWrap.className = "rules-panel-error";
+
+      const message = document.createElement("span");
+      message.textContent = "Could not load scoring rules";
+      errorWrap.appendChild(message);
+
+      const retryBtn = document.createElement("button");
+      retryBtn.type = "button";
+      retryBtn.className = "btn btn-secondary btn-sm rules-retry-btn";
+      retryBtn.textContent = "Retry";
+      retryBtn.addEventListener("click", () => fetchScoringRules(true));
+      errorWrap.appendChild(retryBtn);
+
+      el.scoringRulesPanel.appendChild(errorWrap);
+      return;
+    }
+
+    const sortedRules = Array.isArray(scoringRules)
+      ? [...scoringRules].sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0))
+      : [];
+
+    if (sortedRules.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "rules-empty-message";
+      empty.textContent = "No scoring rules available.";
+      el.scoringRulesPanel.appendChild(empty);
+      return;
+    }
+
+    const tableWrap = document.createElement("div");
+    tableWrap.className = "rules-table-wrap";
+
+    const table = document.createElement("table");
+    table.className = "rules-table";
+
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    ["Order", "Rule", "Description", "Points"].forEach((label) => {
+      const th = document.createElement("th");
+      th.scope = "col";
+      th.textContent = label;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    sortedRules.forEach((rule) => {
+      const row = document.createElement("tr");
+
+      const orderCell = document.createElement("td");
+      orderCell.textContent = String(rule.order ?? "");
+      row.appendChild(orderCell);
+
+      const labelCell = document.createElement("td");
+      labelCell.textContent = String(rule.label || rule.name || "Unknown");
+      row.appendChild(labelCell);
+
+      const descCell = document.createElement("td");
+      descCell.textContent = String(rule.description || "");
+      row.appendChild(descCell);
+
+      const pointsCell = document.createElement("td");
+      pointsCell.className = "rules-points";
+      const points = Number(rule.points || 0);
+      pointsCell.textContent = `+${points}`;
+      row.appendChild(pointsCell);
+
+      tbody.appendChild(row);
+    });
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    el.scoringRulesPanel.appendChild(tableWrap);
+  }
+
   /* ==========================================================================
      DASHBOARD RENDERING (SAFE & ESCAPED)
      ========================================================================== */
@@ -774,6 +928,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
       ["live feed", () => renderLiveFeed(data.sessions)],
       ["attack map", () => renderAttackMap(data.sessions)],
       ["top IPs chart", () => renderTopIpsChart(data.top_ips)],
+      ["top tools chart", () => renderTopToolsChart(data.top_tools)],
       ["top commands chart", () => renderTopCommandsChart(data.top_commands)],
       ["sessions table", () => renderSessionsTable(data.sessions)]
     ];
@@ -1417,7 +1572,94 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     });
   }
 
-  /* 8. Sessions Table with Sorting, Expanding Rows, Typewriter Replay & Attempts */
+  /* 8. Tools Seen Bar Chart */
+  function renderTopToolsChart(topTools) {
+    const hasData = Array.isArray(topTools) && topTools.length > 0;
+
+    if (!hasData) {
+      el.topToolsEmpty.classList.remove("hidden");
+      if (topToolsChart) {
+        topToolsChart.destroy();
+        topToolsChart = null;
+      }
+      return;
+    }
+
+    el.topToolsEmpty.classList.add("hidden");
+
+    const fullTools = topTools.map((tool) => String(tool.tool || "Unknown"));
+    const counts = topTools.map((tool) => Number(tool.count || 0));
+    const displayLabels = fullTools.map((tool) => {
+      return tool.length > 22 ? tool.substring(0, 20) + "..." : tool;
+    });
+
+    if (topToolsChart) {
+      topToolsChart.data.labels = displayLabels;
+      topToolsChart.data.datasets[0].data = counts;
+      topToolsChart.data.datasets[0].fullTools = fullTools;
+      topToolsChart.update();
+      return;
+    }
+
+    const ctx = el.topToolsCanvas.getContext("2d");
+    topToolsChart = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: displayLabels,
+        datasets: [{
+          label: "Occurrences",
+          data: counts,
+          fullTools: fullTools,
+          backgroundColor: "#a78bfa",
+          borderRadius: 4,
+          barThickness: 16
+        }]
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 800 },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: "#0d1424",
+            titleColor: "#e6edf7",
+            bodyColor: "#a78bfa",
+            borderColor: "#1f2d46",
+            borderWidth: 1,
+            padding: 10,
+            callbacks: {
+              title: function (items) {
+                const item = items[0];
+                const tools = item.chart.data.datasets[0].fullTools;
+                return tools[item.dataIndex] || "";
+              },
+              label: function (item) {
+                return `Occurrences: ${item.parsed.x}`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            beginAtZero: true,
+            grid: { color: "#172338" },
+            ticks: { color: "#8fa3c0", font: { family: "JetBrains Mono", size: 11 }, precision: 0 }
+          },
+          y: {
+            grid: { display: false },
+            ticks: {
+              color: "#8fa3c0",
+              font: { family: "JetBrains Mono", size: 11 }
+            }
+          }
+        }
+      }
+    });
+  }
+
+  /* 9. Sessions Table with Sorting, Expanding Rows, Typewriter Replay & Attempts */
   function renderSessionsTable(sessions) {
     const focusedRow = el.sessionsTbody.contains(document.activeElement)
       ? document.activeElement.closest(".session-row")
@@ -1643,6 +1885,188 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     const wrapper = document.createElement("div");
     wrapper.className = "session-detail-wrapper";
 
+    const summaryRow = document.createElement("div");
+    summaryRow.className = "session-detail-header-strip";
+
+    const leftMeta = document.createElement("div");
+    leftMeta.className = "session-detail-header-left";
+    leftMeta.appendChild(createRiskBadge(session.risk_level));
+
+    const toolBadge = document.createElement("span");
+    toolBadge.className = "tool-badge";
+
+    const toolLabel = document.createElement("span");
+    toolLabel.className = "tool-badge-label";
+    toolLabel.textContent = "Tool";
+
+    const toolValue = document.createElement("span");
+    toolValue.className = "tool-badge-value";
+    toolValue.textContent = String(session.tool || "Unknown");
+
+    toolBadge.appendChild(toolLabel);
+    toolBadge.appendChild(toolValue);
+    leftMeta.appendChild(toolBadge);
+    summaryRow.appendChild(leftMeta);
+
+    const metaGroup = document.createElement("div");
+    metaGroup.className = "session-detail-meta";
+
+    const clientVersion = session.client_version || null;
+    if (clientVersion) {
+      const clientMeta = document.createElement("span");
+      clientMeta.className = "session-meta-line";
+      clientMeta.textContent = `client_version: ${clientVersion}`;
+      metaGroup.appendChild(clientMeta);
+    }
+
+    const hassh = session.hassh || null;
+    if (hassh) {
+      const hasshMeta = document.createElement("span");
+      hasshMeta.className = "session-meta-line session-meta-mono";
+      hasshMeta.textContent = `hassh: ${hassh}`;
+      metaGroup.appendChild(hasshMeta);
+    }
+
+    summaryRow.appendChild(metaGroup);
+
+    const printButton = document.createElement("button");
+    printButton.type = "button";
+    printButton.className = "btn btn-secondary btn-sm print-report-btn";
+    printButton.textContent = "Print Report";
+    printButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openIncidentReport(session);
+    });
+    summaryRow.appendChild(printButton);
+
+    wrapper.appendChild(summaryRow);
+
+    const scoreBreakdownSection = document.createElement("div");
+    scoreBreakdownSection.className = "detail-section score-breakdown-section";
+
+    const scoreTitle = document.createElement("div");
+    scoreTitle.className = "detail-section-title";
+    scoreTitle.textContent = "Score Breakdown";
+    scoreBreakdownSection.appendChild(scoreTitle);
+
+    const scoreEntries = Array.isArray(session.score_breakdown) ? session.score_breakdown : [];
+    if (scoreEntries.length === 0) {
+      const emptyScore = document.createElement("div");
+      emptyScore.className = "empty-state compact-empty";
+      const emptyText = document.createElement("p");
+      emptyText.textContent = "No scoring rules matched";
+      emptyScore.appendChild(emptyText);
+      scoreBreakdownSection.appendChild(emptyScore);
+    } else {
+      const scoreList = document.createElement("div");
+      scoreList.className = "score-breakdown-list";
+
+      let totalPoints = 0;
+      scoreEntries.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "score-breakdown-row";
+
+        const description = document.createElement("span");
+        description.className = "score-breakdown-label";
+        description.textContent = String(item.label || item.rule || "Unknown");
+
+        const points = document.createElement("span");
+        points.className = "score-breakdown-points";
+        const value = Number(item.points || 0);
+        totalPoints += value;
+        points.textContent = `+${value}`;
+
+        row.appendChild(description);
+        row.appendChild(points);
+        scoreList.appendChild(row);
+      });
+
+      const totalRow = document.createElement("div");
+      totalRow.className = "score-breakdown-total";
+
+      const totalLabel = document.createElement("span");
+      totalLabel.textContent = "Total";
+
+      const totalValue = document.createElement("span");
+      totalValue.className = "score-breakdown-points";
+      totalValue.textContent = String(Number(session.risk_score || 0));
+
+      totalRow.appendChild(totalLabel);
+      totalRow.appendChild(totalValue);
+      scoreList.appendChild(totalRow);
+      scoreBreakdownSection.appendChild(scoreList);
+
+      const riskScore = Number(session.risk_score || 0);
+      if (riskScore !== totalPoints) {
+        const note = document.createElement("div");
+        note.className = "score-breakdown-note";
+        note.textContent = "Score was adjusted or capped by the backend";
+        scoreBreakdownSection.appendChild(note);
+      }
+    }
+
+    wrapper.appendChild(scoreBreakdownSection);
+
+    const stages = Array.isArray(session.stages)
+      ? [...session.stages].sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0))
+      : [];
+
+    if (stages.length > 0) {
+      const killChainSection = document.createElement("div");
+      killChainSection.className = "detail-section kill-chain-section";
+
+      const killChainTitle = document.createElement("div");
+      killChainTitle.className = "detail-section-title";
+      killChainTitle.textContent = "Attack Progress (Kill Chain)";
+      killChainSection.appendChild(killChainTitle);
+
+      const reachedCount = stages.filter((stage) => stage.reached === true).length;
+      const furthestStage = [...stages].reverse().find((stage) => stage.reached === true);
+      const summary = document.createElement("div");
+      summary.className = "kill-chain-summary";
+      const furthestText = furthestStage && (furthestStage.label || furthestStage.stage)
+        ? ` (furthest: ${furthestStage.label || furthestStage.stage})`
+        : "";
+      summary.textContent = `Reached ${reachedCount} of ${stages.length} stages${furthestText}`;
+      killChainSection.appendChild(summary);
+
+      const list = document.createElement("ol");
+      list.className = "kill-chain-list";
+      list.setAttribute("aria-label", "Attack progress kill chain");
+
+      stages.forEach((stage) => {
+        const item = document.createElement("li");
+        item.className = "kill-chain-step";
+        const reached = stage.reached === true;
+        if (reached) item.classList.add("reached");
+        if (furthestStage && (stage.order || stage.stage) === (furthestStage.order || furthestStage.stage) && reached) {
+          item.classList.add("furthest");
+        }
+
+        const number = document.createElement("span");
+        number.className = "kill-chain-number";
+        number.textContent = String(stage.order || "");
+
+        const label = document.createElement("span");
+        label.className = "kill-chain-label";
+        label.textContent = String(stage.label || stage.stage || "Unknown");
+
+        const sr = document.createElement("span");
+        sr.className = "sr-only";
+        sr.textContent = reached ? "reached" : "not reached";
+
+        item.appendChild(number);
+        item.appendChild(label);
+        item.appendChild(sr);
+        item.setAttribute("aria-label", `${label.textContent} ${reached ? "reached" : "not reached"}`);
+        list.appendChild(item);
+      });
+
+      killChainSection.appendChild(list);
+      wrapper.appendChild(killChainSection);
+    }
+
     // 1. Session Replay Section
     const replaySection = document.createElement("div");
     replaySection.className = "detail-section";
@@ -1669,7 +2093,6 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
         animatedSessionIds.add(sid);
         startTypewriterReplay(terminalBox, commands);
       } else {
-        // Render instantly without animation
         commands.forEach((cmd) => {
           const line = document.createElement("div");
           line.className = "terminal-line";
@@ -1733,20 +2156,23 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
       const tbody = document.createElement("tbody");
 
-      attempts.forEach((att) => {
+      const sortedAttempts = [...attempts].sort((a, b) => {
+        const timeA = a && a.timestamp ? new Date(a.timestamp).getTime() : 0;
+        const timeB = b && b.timestamp ? new Date(b.timestamp).getTime() : 0;
+        return timeA - timeB;
+      });
+
+      sortedAttempts.forEach((att) => {
         const tr = document.createElement("tr");
 
-        // Username
         const tdU = document.createElement("td");
         tdU.textContent = String(att.username || "—");
         tr.appendChild(tdU);
 
-        // Password (treated strictly as plain text!)
         const tdP = document.createElement("td");
         tdP.textContent = String(att.password || "—");
         tr.appendChild(tdP);
 
-        // Result badge
         const tdR = document.createElement("td");
         const badge = document.createElement("span");
         const isSuccess = att.success === true;
@@ -1755,7 +2181,6 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
         tdR.appendChild(badge);
         tr.appendChild(tdR);
 
-        // Timestamp
         const tdT = document.createElement("td");
         tdT.textContent = formatLocalTime(att.timestamp);
         tr.appendChild(tdT);
@@ -1847,6 +2272,295 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     } catch (e) {
       return "—";
     }
+  }
+
+  function handleReportKeydown(event) {
+    if (event.key === "Escape" && activeIncidentReport) {
+      closeIncidentReport();
+    }
+  }
+
+  function openIncidentReport(session) {
+    if (!session) return;
+
+    const existingReport = document.getElementById("report-view");
+    if (existingReport) {
+      existingReport.remove();
+    }
+
+    previousReportTitle = document.title;
+    previousReportScrollY = window.scrollY || window.pageYOffset || 0;
+
+    const snapshot = JSON.parse(JSON.stringify(session));
+    activeIncidentReport = snapshot;
+
+    const reportView = document.createElement("div");
+    reportView.id = "report-view";
+    reportView.className = "report-view";
+
+    const toolbar = document.createElement("div");
+    toolbar.className = "report-view-toolbar no-print";
+
+    const backButton = document.createElement("button");
+    backButton.type = "button";
+    backButton.className = "btn btn-secondary btn-sm";
+    backButton.textContent = "Back to dashboard";
+    backButton.addEventListener("click", closeIncidentReport);
+
+    const printButton = document.createElement("button");
+    printButton.type = "button";
+    printButton.className = "btn btn-primary btn-sm";
+    printButton.textContent = "Print / Save as PDF";
+    printButton.addEventListener("click", () => window.print());
+
+    const toolbarRight = document.createElement("div");
+    toolbarRight.className = "report-toolbar-actions";
+    toolbarRight.appendChild(printButton);
+    toolbar.appendChild(backButton);
+    toolbar.appendChild(toolbarRight);
+
+    reportView.appendChild(toolbar);
+
+    const content = document.createElement("div");
+    content.className = "report-view-content";
+
+    const reportHeader = document.createElement("header");
+    reportHeader.className = "report-header";
+
+    const title = document.createElement("h1");
+    title.textContent = "Honeypot Incident Report";
+    reportHeader.appendChild(title);
+
+    const generated = document.createElement("div");
+    generated.className = "report-generated";
+    generated.textContent = `Generated: ${formatLocalTime(new Date().toISOString())}`;
+    reportHeader.appendChild(generated);
+
+    const warning = document.createElement("div");
+    warning.className = "report-warning";
+    warning.textContent = "Contains sensitive data. Handle with care.";
+    reportHeader.appendChild(warning);
+
+    content.appendChild(reportHeader);
+
+    const summarySection = document.createElement("section");
+    summarySection.className = "report-section";
+
+    const summaryTitle = document.createElement("h2");
+    summaryTitle.textContent = "Summary";
+    summarySection.appendChild(summaryTitle);
+
+    const summaryTable = document.createElement("table");
+    summaryTable.className = "report-table";
+
+    const summaryRows = [
+      ["Session ID", String(snapshot.session_id || "Unknown")],
+      ["Source IP", String(snapshot.src_ip || "Unknown")],
+      ["Start time", formatLocalTime(snapshot.start_time)],
+      ["Risk score", String(Number(snapshot.risk_score || 0))],
+      ["Risk level", String(snapshot.risk_level || "low")],
+      ["Identified tool", `${String(snapshot.tool || "Unknown")}${snapshot.client_version ? ` (${snapshot.client_version})` : ""}${snapshot.hassh ? ` | hassh: ${snapshot.hassh}` : ""}`]
+    ];
+
+    summaryRows.forEach(([label, value]) => {
+      const row = document.createElement("tr");
+      const labelCell = document.createElement("th");
+      labelCell.scope = "row";
+      labelCell.textContent = label;
+      const valueCell = document.createElement("td");
+      valueCell.textContent = value;
+      row.appendChild(labelCell);
+      row.appendChild(valueCell);
+      summaryTable.appendChild(row);
+    });
+    summarySection.appendChild(summaryTable);
+    content.appendChild(summarySection);
+
+    const breakdownSection = document.createElement("section");
+    breakdownSection.className = "report-section";
+
+    const breakdownTitle = document.createElement("h2");
+    breakdownTitle.textContent = "Risk Score Breakdown";
+    breakdownSection.appendChild(breakdownTitle);
+
+    const breakdownList = document.createElement("div");
+    breakdownList.className = "report-breakdown-list";
+
+    const scoreEntries = Array.isArray(snapshot.score_breakdown) ? snapshot.score_breakdown : [];
+    let totalPoints = 0;
+    if (scoreEntries.length === 0) {
+      const noData = document.createElement("p");
+      noData.className = "report-empty";
+      noData.textContent = "No scoring rules matched";
+      breakdownList.appendChild(noData);
+    } else {
+      scoreEntries.forEach((entry) => {
+        const line = document.createElement("div");
+        line.className = "report-breakdown-row";
+
+        const label = document.createElement("span");
+        label.textContent = String(entry.label || entry.rule || "Unknown");
+
+        const points = document.createElement("span");
+        points.className = "report-breakdown-points";
+        const value = Number(entry.points || 0);
+        totalPoints += value;
+        points.textContent = `+${value}`;
+
+        line.appendChild(label);
+        line.appendChild(points);
+        breakdownList.appendChild(line);
+      });
+
+      const totalLine = document.createElement("div");
+      totalLine.className = "report-breakdown-row report-breakdown-total";
+      const totalLabel = document.createElement("span");
+      totalLabel.textContent = "Total";
+      const totalValue = document.createElement("span");
+      totalValue.className = "report-breakdown-points";
+      totalValue.textContent = String(Number(snapshot.risk_score || 0));
+      totalLine.appendChild(totalLabel);
+      totalLine.appendChild(totalValue);
+      breakdownList.appendChild(totalLine);
+
+      if (Number(snapshot.risk_score || 0) !== totalPoints) {
+        const note = document.createElement("p");
+        note.className = "report-note";
+        note.textContent = "Score was adjusted or capped by the backend";
+        breakdownList.appendChild(note);
+      }
+    }
+
+    breakdownSection.appendChild(breakdownList);
+    content.appendChild(breakdownSection);
+
+    const killChainSection = document.createElement("section");
+    killChainSection.className = "report-section";
+
+    const killTitle = document.createElement("h2");
+    killTitle.textContent = "Kill Chain";
+    killChainSection.appendChild(killTitle);
+
+    const stages = Array.isArray(snapshot.stages)
+      ? [...snapshot.stages].sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0))
+      : [];
+
+    if (stages.length > 0) {
+      const reachedCount = stages.filter((stage) => stage.reached === true).length;
+      const furthest = [...stages].reverse().find((stage) => stage.reached === true);
+      const summaryText = document.createElement("p");
+      summaryText.className = "report-summary-text";
+      const furthestText = furthest && (furthest.label || furthest.stage)
+        ? ` (furthest: ${furthest.label || furthest.stage})`
+        : "";
+      summaryText.textContent = `Reached ${reachedCount} of ${stages.length} stages${furthestText}`;
+      killChainSection.appendChild(summaryText);
+
+      const killTable = document.createElement("table");
+      killTable.className = "report-table report-killchain-table";
+      stages.forEach((stage) => {
+        const row = document.createElement("tr");
+        const stageName = document.createElement("th");
+        stageName.scope = "row";
+        stageName.textContent = `${stage.order || ""}. ${stage.label || stage.stage || "Unknown"}`;
+        const status = document.createElement("td");
+        status.textContent = stage.reached === true ? "Reached" : "Not reached";
+        status.className = stage.reached === true ? "status-reached" : "status-not-reached";
+        row.appendChild(stageName);
+        row.appendChild(status);
+        killTable.appendChild(row);
+      });
+      killChainSection.appendChild(killTable);
+    }
+    content.appendChild(killChainSection);
+
+    const timelineSection = document.createElement("section");
+    timelineSection.className = "report-section";
+
+    const timelineTitle = document.createElement("h2");
+    timelineTitle.textContent = "Activity Timeline";
+    timelineSection.appendChild(timelineTitle);
+
+    const attempts = Array.isArray(snapshot.login_attempts) ? [...snapshot.login_attempts] : [];
+    if (attempts.length > 0) {
+      const attemptsTable = document.createElement("table");
+      attemptsTable.className = "report-table";
+      const attemptsHead = document.createElement("thead");
+      const attemptsHeadRow = document.createElement("tr");
+      ["Time", "Username", "Password", "Result"].forEach((headerLabel) => {
+        const cell = document.createElement("th");
+        cell.textContent = headerLabel;
+        attemptsHeadRow.appendChild(cell);
+      });
+      attemptsHead.appendChild(attemptsHeadRow);
+      attemptsTable.appendChild(attemptsHead);
+
+      const attemptsBody = document.createElement("tbody");
+      attempts
+        .sort((a, b) => {
+          const aTime = a && a.timestamp ? new Date(a.timestamp).getTime() : 0;
+          const bTime = b && b.timestamp ? new Date(b.timestamp).getTime() : 0;
+          return aTime - bTime;
+        })
+        .forEach((attempt) => {
+          const row = document.createElement("tr");
+          const timeCell = document.createElement("td");
+          timeCell.textContent = formatLocalTime(attempt.timestamp);
+          const userCell = document.createElement("td");
+          userCell.textContent = String(attempt.username || "—");
+          const passCell = document.createElement("td");
+          passCell.textContent = String(attempt.password || "—");
+          const resultCell = document.createElement("td");
+          resultCell.textContent = attempt.success === true ? "Success" : "Failed";
+          row.appendChild(timeCell);
+          row.appendChild(userCell);
+          row.appendChild(passCell);
+          row.appendChild(resultCell);
+          attemptsBody.appendChild(row);
+        });
+      attemptsTable.appendChild(attemptsBody);
+      timelineSection.appendChild(attemptsTable);
+    } else {
+      const noAttempts = document.createElement("p");
+      noAttempts.className = "report-empty";
+      noAttempts.textContent = "No login attempts recorded";
+      timelineSection.appendChild(noAttempts);
+    }
+
+    const commands = Array.isArray(snapshot.commands) ? snapshot.commands : [];
+    const commandList = document.createElement("ol");
+    commandList.className = "report-command-list";
+    commands.forEach((command, index) => {
+      const item = document.createElement("li");
+      item.textContent = `${index + 1}. ${command}`;
+      commandList.appendChild(item);
+    });
+    if (commands.length === 0) {
+      const noCommands = document.createElement("p");
+      noCommands.className = "report-empty";
+      noCommands.textContent = "No commands were run";
+      commandList.appendChild(noCommands);
+    }
+    timelineSection.appendChild(commandList);
+
+    content.appendChild(timelineSection);
+    reportView.appendChild(content);
+    document.body.appendChild(reportView);
+    document.body.style.overflow = "hidden";
+    document.title = `Incident Report - ${String(snapshot.session_id || "Unknown")}`;
+    document.addEventListener("keydown", handleReportKeydown);
+  }
+
+  function closeIncidentReport() {
+    const reportView = document.getElementById("report-view");
+    if (reportView) {
+      reportView.remove();
+    }
+    activeIncidentReport = null;
+    document.body.style.overflow = "";
+    document.title = previousReportTitle || "Honeypot Attack Console";
+    window.scrollTo({ top: previousReportScrollY, behavior: "auto" });
+    document.removeEventListener("keydown", handleReportKeydown);
   }
 
   /* ==========================================================================
