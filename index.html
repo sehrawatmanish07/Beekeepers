@@ -146,6 +146,37 @@
 
       <!-- Header Utilities -->
       <div class="header-controls">
+        <div class="notification-control">
+          <button id="notifications-bell" class="btn btn-secondary btn-sm notifications-bell" type="button" aria-label="Notifications, 0 unread" aria-haspopup="dialog" aria-expanded="false" aria-controls="notifications-panel">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/>
+              <path d="M10 21h4"/>
+            </svg>
+            <span id="notifications-count" class="notifications-count hidden" aria-hidden="true">0</span>
+          </button>
+          <section id="notifications-panel" class="notifications-panel hidden" role="dialog" aria-label="Notifications" aria-modal="false" tabindex="-1">
+            <div class="notifications-panel-header">
+              <h2>Notifications</h2>
+              <div class="notifications-panel-actions">
+                <button id="notifications-mute" class="notification-icon-button" type="button" aria-label="Mute notification sounds" title="Mute notification sounds">
+                  <svg id="notifications-sound-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M11 5 6 9H2v6h4l5 4z"/>
+                    <path d="M15.5 8.5a5 5 0 0 1 0 7"/>
+                    <path d="M19 5a10 10 0 0 1 0 14"/>
+                  </svg>
+                </button>
+                <button id="notifications-mark-read" class="btn btn-ghost btn-sm" type="button">Mark all as read</button>
+              </div>
+            </div>
+            <div class="notifications-tabs" role="tablist" aria-label="Notification status">
+              <button id="notifications-tab-unread" class="notifications-tab active" type="button" role="tab" aria-selected="true" aria-controls="notifications-list-unread">Unread (0)</button>
+              <button id="notifications-tab-read" class="notifications-tab" type="button" role="tab" aria-selected="false" aria-controls="notifications-list-read">Read (0)</button>
+            </div>
+            <div id="notifications-list-unread" class="notifications-list" role="tabpanel" aria-labelledby="notifications-tab-unread"></div>
+            <div id="notifications-list-read" class="notifications-list hidden" role="tabpanel" aria-labelledby="notifications-tab-read"></div>
+          </section>
+        </div>
+
         <!-- Auto-refresh Countdown Ring -->
         <div class="refresh-indicator" title="Auto-refresh interval" aria-label="Auto-refresh countdown">
           <svg class="countdown-svg" width="30" height="30" viewBox="0 0 36 36" aria-hidden="true">
@@ -187,6 +218,8 @@
         </button>
       </div>
     </header>
+
+    <div id="notification-toasts" class="notification-toasts" aria-label="New notifications"></div>
 
     <!-- Dashboard Content Area -->
     <main class="console-main">

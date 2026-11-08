@@ -15,6 +15,23 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   const IS_PLACEHOLDER = !RAW_URL || RAW_URL === "PLACEHOLDER";
   const API_BASE = RAW_URL.replace(/\/+$/, "");
 
+  // Notification thresholds and display limits.
+  const ALERT_CONFIG = {
+    BRUTE_FORCE_WARN: 10,
+    BRUTE_FORCE_SEVERE: 15,
+    BRUTE_FORCE_WINDOW_MINUTES: 10,
+    REPEAT_ATTACKER_MINUTES: 60,
+    TOAST_SECONDS: 8,
+    MAX_VISIBLE_TOASTS: 4,
+    MAX_READ_ALERTS: 20,
+    MAX_UNREAD_ALERTS: 100,
+    DANGEROUS_COMMANDS: [
+      "wget", "curl", "tftp", "chmod +x", "nc ", "ncat", "crontab",
+      "useradd", "adduser", "passwd", "authorized_keys", "base64 -d",
+      "bash -c", "python -c", "rm -rf"
+    ]
+  };
+
   // Storage Keys
   const TOKEN_KEY = "dashboard_token";
   const KIKO_HIDDEN_KEY = "kiko_mascot_hidden";
@@ -66,6 +83,24 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   let activeIncidentReport = null;
   let previousReportTitle = "";
   let previousReportScrollY = 0;
+  let alertBaselineInitialized = false;
+  let firedAlertKeys = new Set();
+  let knownAlertSessionIds = new Set();
+  let seenAttackerIps = new Set();
+  let latestSessionTimeByIp = new Map();
+  let unreadNotifications = [];
+  let readNotifications = [];
+  let notificationMuted = false;
+  let notificationPanelOpen = false;
+  let notificationListTab = "unread";
+  let toastQueue = [];
+  let activeToasts = new Map();
+  let toastIdCounter = 0;
+  let alertReactionTimerId = null;
+  let alertReactionSnapshot = null;
+  let alertAudioContext = null;
+  let pageAudioUnlocked = false;
+  let notificationHighlightTimerId = null;
 
   // Chart References
   let timelineChart = null;
@@ -96,6 +131,17 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     toggleMascotLabel: document.getElementById("toggle-mascot-label"),
     countdownProgress: document.getElementById("countdown-progress"),
     countdownText: document.getElementById("countdown-text"),
+    notificationsBell: document.getElementById("notifications-bell"),
+    notificationsCount: document.getElementById("notifications-count"),
+    notificationsPanel: document.getElementById("notifications-panel"),
+    notificationsMute: document.getElementById("notifications-mute"),
+    notificationsSoundIcon: document.getElementById("notifications-sound-icon"),
+    notificationsMarkRead: document.getElementById("notifications-mark-read"),
+    notificationsTabUnread: document.getElementById("notifications-tab-unread"),
+    notificationsTabRead: document.getElementById("notifications-tab-read"),
+    notificationsListUnread: document.getElementById("notifications-list-unread"),
+    notificationsListRead: document.getElementById("notifications-list-read"),
+    notificationToasts: document.getElementById("notification-toasts"),
 
     // Tabs
     tabLinks: {
@@ -517,6 +563,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   function handleLogout(message) {
     sessionStorage.removeItem(TOKEN_KEY);
     stopPolling();
+    resetAlertSessionState();
     clearTimeout(sessionsSearchDebounceId);
     sessionsSearchDebounceId = null;
     el.sessionSearchInput.value = "";
@@ -543,6 +590,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     el.loginView.classList.add("hidden");
     el.dashboardView.classList.remove("hidden");
     hideLoginAlerts();
+    loadSavedNotifications();
 
     // Reset mascot speech
     setKikoMouth(false);
@@ -776,6 +824,11 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     }
 
     lastDashboardData = data;
+    try {
+      processAlerts(Array.isArray(data.sessions) ? data.sessions : []);
+    } catch (err) {
+      console.error("Notification processing failed.");
+    }
     el.exportPdfBtn.disabled = !data || !Array.isArray(data.sessions);
     hideConnectionBanner();
 
@@ -1688,6 +1741,18 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   }
 
   /* 9. Sessions Table with Sorting, Expanding Rows, Typewriter Replay & Attempts */
+  function setSessionExpanded(sessionId, expanded) {
+    if (expanded) {
+      expandedSessionIds.add(sessionId);
+    } else {
+      expandedSessionIds.delete(sessionId);
+    }
+
+    if (lastDashboardData && Array.isArray(lastDashboardData.sessions)) {
+      renderSessionsTable(lastDashboardData.sessions);
+    }
+  }
+
   function renderSessionsTable(sessions) {
     const focusedRow = el.sessionsTbody.contains(document.activeElement)
       ? document.activeElement.closest(".session-row")
@@ -1758,13 +1823,14 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
     visibleSessions.forEach((session) => {
       const sid = String(session.session_id || "");
-      const isExpanded = expandedSessionIds.has(sid);
+      const sessionKey = sid || alertSessionKey(session, sessions.indexOf(session));
+      const isExpanded = expandedSessionIds.has(sessionKey);
       const riskLevel = (session.risk_level || "low").toLowerCase();
 
       // Main session row
       const tr = document.createElement("tr");
       tr.className = `session-row risk-tint-${riskLevel}`;
-      tr.dataset.sessionId = sid;
+      tr.dataset.sessionId = sessionKey;
       if (isExpanded) tr.classList.add("expanded");
       tr.tabIndex = 0;
       tr.setAttribute("role", "button");
@@ -1809,14 +1875,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
       tr.appendChild(tdCmds);
 
       // Click / Enter listener to toggle details
-      const toggleRow = () => {
-        if (expandedSessionIds.has(sid)) {
-          expandedSessionIds.delete(sid);
-        } else {
-          expandedSessionIds.add(sid);
-        }
-        renderSessionsTable(lastDashboardData.sessions);
-      };
+      const toggleRow = () => setSessionExpanded(sessionKey, !expandedSessionIds.has(sessionKey));
 
       tr.addEventListener("click", toggleRow);
       tr.addEventListener("keydown", (e) => {
@@ -2928,12 +2987,989 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     });
   }
 
+  function readAlertStorage(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function writeAlertStorage(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch (error) {
+      // Alerts remain available in memory when browser storage is blocked.
+    }
+  }
+
+  function storedNotificationFields(notification) {
+    return {
+      id: String(notification.id || ""),
+      severity: String(notification.severity || "Info"),
+      type: String(notification.type || "activity"),
+      ip: String(notification.ip || ""),
+      message: String(notification.message || ""),
+      time: String(notification.time || new Date().toISOString()),
+      session_ids: Array.isArray(notification.session_ids)
+        ? notification.session_ids.map((id) => String(id))
+        : []
+    };
+  }
+
+  function parseStoredNotifications(value) {
+    if (!value) return [];
+    try {
+      const parsed = JSON.parse(value);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((item) => item && typeof item === "object")
+        .map(storedNotificationFields)
+        .filter((item) => item.id && item.message);
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function persistNotifications() {
+    writeAlertStorage(
+      "honeypot_alerts_unread",
+      JSON.stringify(unreadNotifications.slice(0, ALERT_CONFIG.MAX_UNREAD_ALERTS).map(storedNotificationFields))
+    );
+    writeAlertStorage(
+      "honeypot_alerts_read",
+      JSON.stringify(readNotifications.slice(0, ALERT_CONFIG.MAX_READ_ALERTS).map(storedNotificationFields))
+    );
+  }
+
+  function loadSavedNotifications() {
+    unreadNotifications = parseStoredNotifications(readAlertStorage("honeypot_alerts_unread"))
+      .slice(0, ALERT_CONFIG.MAX_UNREAD_ALERTS);
+    readNotifications = parseStoredNotifications(readAlertStorage("honeypot_alerts_read"))
+      .slice(0, ALERT_CONFIG.MAX_READ_ALERTS);
+    notificationMuted = readAlertStorage("honeypot_alerts_muted") === "true";
+    persistNotifications();
+    updateNotificationMuteButton();
+    updateNotificationBadge();
+    renderNotificationPanel();
+    updateNotificationOverlayPosition();
+  }
+
+  function createNotificationId() {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      return window.crypto.randomUUID();
+    }
+    return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function alertSessionKey(session, index) {
+    if (session && session.session_id !== undefined && session.session_id !== null &&
+        String(session.session_id) !== "") {
+      return String(session.session_id);
+    }
+    const ip = String(session && session.src_ip || "unknown");
+    const started = String(session && session.start_time || "unknown");
+    if (started !== "unknown") return `${ip}:${started}`;
+    const commandCount = Array.isArray(session && session.commands) ? session.commands.length : 0;
+    const attemptCount = Array.isArray(session && session.login_attempts) ? session.login_attempts.length : 0;
+    return `${ip}:unknown:${String(session && session.risk_level || "")}:${String(session && session.risk_score || "")}:${commandCount}:${attemptCount}:${index}`;
+  }
+
+  function alertSessionTime(session) {
+    const time = new Date(session && session.start_time || "").getTime();
+    return Number.isFinite(time) ? time : null;
+  }
+
+  function alertIp(session) {
+    return String(session && session.src_ip || "Unknown IP");
+  }
+
+  function sessionAlertSignals(session, sessionKey) {
+    const signals = [];
+    const ip = alertIp(session);
+    const attempts = Array.isArray(session && session.login_attempts)
+      ? session.login_attempts
+      : [];
+    let failedBeforeSuccess = false;
+    let successfulUsername = "";
+
+    attempts.some((attempt) => {
+      if (!attempt || typeof attempt !== "object") return false;
+      if (attempt.success === false) {
+        failedBeforeSuccess = true;
+      } else if (attempt.success === true && failedBeforeSuccess) {
+        successfulUsername = String(attempt.username || "unknown");
+        return true;
+      }
+      return false;
+    });
+
+    if (successfulUsername) {
+      signals.push({
+        key: `${sessionKey}:break-in:high`,
+        type: "break-in",
+        severity: "High",
+        ip,
+        message: `${ip} guessed a password and logged in as ${successfulUsername}`,
+        session_ids: [sessionKey]
+      });
+    }
+
+    const commands = Array.isArray(session && session.commands) ? session.commands : [];
+    const riskyCommand = commands.find((command) => {
+      const normalized = String(command || "").toLowerCase();
+      return ALERT_CONFIG.DANGEROUS_COMMANDS.some((pattern) => normalized.includes(pattern));
+    });
+    if (riskyCommand !== undefined) {
+      const commandText = String(riskyCommand).slice(0, 60);
+      signals.push({
+        key: `${sessionKey}:dangerous-command:high`,
+        type: "dangerous-command",
+        severity: "High",
+        ip,
+        message: `${ip} ran a risky command: ${commandText}`,
+        session_ids: [sessionKey]
+      });
+    }
+
+    const riskLevel = String(session && session.risk_level || "").toLowerCase();
+    if (riskLevel === "high" || riskLevel === "critical") {
+      const severity = riskLevel === "critical" ? "Critical" : "High";
+      signals.push({
+        key: `${sessionKey}:risk-${riskLevel}:${severity.toLowerCase()}`,
+        type: `risk-${riskLevel}`,
+        severity,
+        ip,
+        message: `${ip} started a ${riskLevel} risk session (score ${String(session.risk_score ?? "—")})`,
+        session_ids: [sessionKey]
+      });
+    }
+
+    return signals;
+  }
+
+  function countRecentFailedLogins(sessions, now) {
+    const windowMs = ALERT_CONFIG.BRUTE_FORCE_WINDOW_MINUTES * 60 * 1000;
+    const counts = new Map();
+    const sessionsByIp = new Map();
+
+    sessions.forEach((session, index) => {
+      const time = alertSessionTime(session);
+      if (time === null || time < now - windowMs || time > now) return;
+      const failedCount = (Array.isArray(session.login_attempts) ? session.login_attempts : [])
+        .filter((attempt) => attempt && attempt.success === false).length;
+      if (failedCount === 0) return;
+      const ip = alertIp(session);
+      counts.set(ip, (counts.get(ip) || 0) + failedCount);
+      if (!sessionsByIp.has(ip)) sessionsByIp.set(ip, []);
+      sessionsByIp.get(ip).push(alertSessionKey(session, index));
+    });
+
+    return { counts, sessionsByIp };
+  }
+
+  function processAlerts(sessions) {
+    const safeSessions = Array.isArray(sessions)
+      ? sessions.filter((session) => session && typeof session === "object")
+      : [];
+    const newestTime = safeSessions.reduce((latest, session) => {
+      const time = alertSessionTime(session);
+      return time !== null && (latest === null || time > latest) ? time : latest;
+    }, null);
+    const savedLastSeen = readAlertStorage("honeypot_last_seen_time");
+    const savedLastSeenTime = savedLastSeen ? new Date(savedLastSeen).getTime() : NaN;
+    const now = Date.now();
+
+    if (!alertBaselineInitialized) {
+      const awaySessions = Number.isFinite(savedLastSeenTime)
+        ? safeSessions.filter((session) => {
+          const time = alertSessionTime(session);
+          return time !== null && time > savedLastSeenTime;
+        })
+        : [];
+      const awayNotification = awaySessions.length
+        ? createWhileAwayNotification(awaySessions)
+        : null;
+
+      seedAlertBaseline(safeSessions, now);
+      alertBaselineInitialized = true;
+      saveNewestAlertTime(newestTime, savedLastSeenTime);
+      if (awayNotification) {
+        emitNotifications([awayNotification]);
+      }
+      return;
+    }
+
+    const newSessions = [];
+    const sortedSessions = safeSessions
+      .map((session, index) => ({
+        session,
+        index,
+        key: alertSessionKey(session, index),
+        time: alertSessionTime(session)
+      }))
+      .sort((a, b) => (a.time || 0) - (b.time || 0));
+
+    sortedSessions.forEach(({ session, key, time }) => {
+      if (!knownAlertSessionIds.has(key)) {
+        newSessions.push({ session, key, time });
+      }
+    });
+
+    const newSignals = [];
+    newSessions.forEach(({ session, key, time }) => {
+      const ip = alertIp(session);
+      const previousTime = latestSessionTimeByIp.get(ip);
+      if (!seenAttackerIps.has(ip)) {
+        const signalKey = `${key}:new-attacker:info`;
+        if (!firedAlertKeys.has(signalKey)) {
+          firedAlertKeys.add(signalKey);
+          newSignals.push({
+            key: signalKey,
+            type: "new-attacker",
+            severity: "Info",
+            ip,
+            message: `New attacker IP: ${ip}`,
+            session_ids: [key]
+          });
+        }
+      } else if (time !== null && previousTime !== undefined &&
+          time - previousTime > ALERT_CONFIG.REPEAT_ATTACKER_MINUTES * 60 * 1000) {
+        const minutes = Math.floor((time - previousTime) / 60000);
+        const signalKey = `${key}:repeat-attacker:medium`;
+        if (!firedAlertKeys.has(signalKey)) {
+          firedAlertKeys.add(signalKey);
+          newSignals.push({
+            key: signalKey,
+            type: "repeat-attacker",
+            severity: "Medium",
+            ip,
+            message: `${ip} is back after ${minutes} minutes`,
+            session_ids: [key]
+          });
+        }
+      }
+      if (!seenAttackerIps.has(ip)) seenAttackerIps.add(ip);
+      if (time !== null && (previousTime === undefined || time > previousTime)) {
+        latestSessionTimeByIp.set(ip, time);
+      }
+    });
+
+    safeSessions.forEach((session, index) => {
+      const key = alertSessionKey(session, index);
+      sessionAlertSignals(session, key).forEach((signal) => {
+        if (firedAlertKeys.has(signal.key)) return;
+        firedAlertKeys.add(signal.key);
+        newSignals.push(signal);
+      });
+    });
+
+    const bruteForce = countRecentFailedLogins(safeSessions, now);
+    bruteForce.counts.forEach((count, ip) => {
+      let severity = "";
+      let level = "";
+      if (count >= ALERT_CONFIG.BRUTE_FORCE_SEVERE) {
+        severity = "Critical";
+        level = "severe";
+      } else if (count >= ALERT_CONFIG.BRUTE_FORCE_WARN) {
+        severity = "High";
+        level = "warn";
+      }
+      if (!severity) return;
+
+      const key = `${ip}:brute:${level}`;
+      if (firedAlertKeys.has(key)) return;
+      firedAlertKeys.add(key);
+      newSignals.push({
+        key,
+        type: "brute-force",
+        severity,
+        ip,
+        message: `${level === "severe" ? "Brute force attack" : "Possible brute force"} from ${ip}: ${count} failed logins`,
+        session_ids: bruteForce.sessionsByIp.get(ip) || []
+      });
+    });
+
+    sortedSessions.forEach(({ session, key, time }) => {
+      knownAlertSessionIds.add(key);
+      const ip = alertIp(session);
+      seenAttackerIps.add(ip);
+      if (time !== null) {
+        const previousTime = latestSessionTimeByIp.get(ip);
+        if (previousTime === undefined || time > previousTime) {
+          latestSessionTimeByIp.set(ip, time);
+        }
+      }
+    });
+
+    const groupedNotifications = groupAlertSignals(newSignals);
+    saveNewestAlertTime(newestTime, savedLastSeenTime);
+    if (groupedNotifications.length) {
+      emitNotifications(groupedNotifications);
+    }
+  }
+
+  function seedAlertBaseline(sessions, now) {
+    const sortedSessions = sessions.map((session, index) => ({
+      session,
+      index,
+      key: alertSessionKey(session, index),
+      time: alertSessionTime(session)
+    })).sort((a, b) => (a.time || 0) - (b.time || 0));
+
+    sortedSessions.forEach(({ session, key, time }) => {
+      knownAlertSessionIds.add(key);
+      sessionAlertSignals(session, key).forEach((signal) => firedAlertKeys.add(signal.key));
+      const ip = alertIp(session);
+      const previousTime = latestSessionTimeByIp.get(ip);
+      if (!seenAttackerIps.has(ip)) {
+        firedAlertKeys.add(`${key}:new-attacker:info`);
+      } else if (time !== null && previousTime !== undefined &&
+          time - previousTime > ALERT_CONFIG.REPEAT_ATTACKER_MINUTES * 60 * 1000) {
+        firedAlertKeys.add(`${key}:repeat-attacker:medium`);
+      }
+      seenAttackerIps.add(ip);
+      if (time !== null) {
+        if (previousTime === undefined || time > previousTime) {
+          latestSessionTimeByIp.set(ip, time);
+        }
+      }
+    });
+
+    const bruteForce = countRecentFailedLogins(sessions, now);
+    bruteForce.counts.forEach((count, ip) => {
+      if (count >= ALERT_CONFIG.BRUTE_FORCE_WARN) {
+        firedAlertKeys.add(`${ip}:brute:warn`);
+      }
+      if (count >= ALERT_CONFIG.BRUTE_FORCE_SEVERE) {
+        firedAlertKeys.add(`${ip}:brute:severe`);
+      }
+    });
+  }
+
+  function saveNewestAlertTime(newestTime, previousTime) {
+    const time = Number.isFinite(previousTime)
+      ? Math.max(newestTime === null ? previousTime : newestTime, previousTime)
+      : newestTime;
+    if (time !== null && Number.isFinite(time)) {
+      writeAlertStorage("honeypot_last_seen_time", new Date(time).toISOString());
+    }
+  }
+
+  function createWhileAwayNotification(sessions) {
+    const sorted = [...sessions].sort((a, b) =>
+      (alertSessionTime(a) || 0) - (alertSessionTime(b) || 0)
+    );
+    const newest = sorted[sorted.length - 1];
+    const criticalCount = sessions.filter((session) =>
+      String(session.risk_level || "").toLowerCase() === "critical"
+    ).length;
+    const highCount = sessions.filter((session) =>
+      String(session.risk_level || "").toLowerCase() === "high"
+    ).length;
+    const severity = criticalCount ? "Critical" : highCount ? "High" : "Info";
+    const newestIndex = sessions.indexOf(newest);
+    const newestKey = newest ? alertSessionKey(newest, newestIndex) : "";
+
+    return storedNotificationFields({
+      id: createNotificationId(),
+      severity,
+      type: "while-away",
+      ip: newest ? alertIp(newest) : "",
+      message: `While you were away: ${sessions.length} new sessions (${highCount} High, ${criticalCount} Critical)`,
+      time: new Date().toISOString(),
+      session_ids: newestKey ? [newestKey] : []
+    });
+  }
+
+  function groupAlertSignals(signals) {
+    const groups = new Map();
+    signals.forEach((signal) => {
+      const ip = String(signal.ip || "Unknown IP");
+      if (!groups.has(ip)) groups.set(ip, []);
+      groups.get(ip).push(signal);
+    });
+
+    return Array.from(groups.entries()).map(([ip, items]) => {
+      const severityOrder = { Critical: 4, High: 3, Medium: 2, Info: 1 };
+      const severity = items.reduce((highest, item) =>
+        severityOrder[item.severity] > severityOrder[highest] ? item.severity : highest
+      , "Info");
+      const sessionIds = Array.from(new Set(items.flatMap((item) => item.session_ids || [])));
+      const types = Array.from(new Set(items.map((item) => item.type)));
+      const severityCounts = new Map();
+      items.forEach((item) => severityCounts.set(item.severity, (severityCounts.get(item.severity) || 0) + 1));
+      const severitySummary = ["Critical", "High", "Medium", "Info"]
+        .filter((level) => severityCounts.has(level))
+        .map((level) => `${severityCounts.get(level)} ${level}`)
+        .join(", ");
+      const typeLabels = types.map((type) => ({
+        "brute-force": "Brute force",
+        "break-in": "Break-in",
+        "dangerous-command": "Dangerous command",
+        "risk-high": "High-risk session",
+        "risk-critical": "Critical-risk session",
+        "new-attacker": "New attacker",
+        "repeat-attacker": "Repeat attacker"
+      }[type] || type));
+      const typeDetails = Array.from(new Map(items.map((item) => [item.type, item.message])).values());
+
+      return storedNotificationFields({
+        id: createNotificationId(),
+        severity,
+        type: types.join(","),
+        ip,
+        message: `${ip}: ${sessionIds.length} new sessions, ${severitySummary}. ${typeLabels.join(", ")}. ${typeDetails.join("; ")}`,
+        time: new Date().toISOString(),
+        session_ids: sessionIds
+      });
+    });
+  }
+
+  function emitNotifications(notifications) {
+    if (!notifications.length) return;
+    unreadNotifications = [...notifications.map(storedNotificationFields), ...unreadNotifications]
+      .slice(0, ALERT_CONFIG.MAX_UNREAD_ALERTS);
+    persistNotifications();
+    updateNotificationBadge();
+    renderNotificationPanel();
+    notifications.forEach(enqueueNotificationToast);
+
+    const severityOrder = { Critical: 4, High: 3, Medium: 2, Info: 1 };
+    const highestSeverity = notifications.reduce((highest, item) =>
+      severityOrder[item.severity] > severityOrder[highest] ? item.severity : highest
+    , "Info");
+    if (highestSeverity !== "Info") {
+      reactKikoToAlert(notifications.some((item) => item.type.split(",").includes("brute-force")));
+      playNotificationSound(highestSeverity);
+    }
+  }
+
+  function resetAlertSessionState() {
+    alertBaselineInitialized = false;
+    firedAlertKeys = new Set();
+    knownAlertSessionIds = new Set();
+    seenAttackerIps = new Set();
+    latestSessionTimeByIp = new Map();
+    unreadNotifications = [];
+    readNotifications = [];
+    notificationMuted = false;
+    notificationListTab = "unread";
+    toastQueue = [];
+    closeAllNotificationToasts();
+    closeNotificationPanel(false);
+    if (alertReactionTimerId) clearTimeout(alertReactionTimerId);
+    alertReactionTimerId = null;
+    alertReactionSnapshot = null;
+    if (el.kikoDashAvatar) el.kikoDashAvatar.classList.remove("kiko-alert-reaction");
+    if (notificationHighlightTimerId) clearTimeout(notificationHighlightTimerId);
+    notificationHighlightTimerId = null;
+    updateNotificationBadge();
+  }
+
+  function initNotifications() {
+    el.notificationsBell.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (notificationPanelOpen) {
+        closeNotificationPanel();
+      } else {
+        openNotificationPanel();
+      }
+    });
+
+    el.notificationsPanel.addEventListener("click", (event) => event.stopPropagation());
+    el.notificationsTabUnread.addEventListener("click", () => selectNotificationTab("unread"));
+    el.notificationsTabRead.addEventListener("click", () => selectNotificationTab("read"));
+    el.notificationsMarkRead.addEventListener("click", markAllNotificationsRead);
+    el.notificationsMute.addEventListener("click", toggleNotificationMute);
+
+    document.addEventListener("pointerdown", (event) => {
+      if (notificationPanelOpen &&
+          !el.notificationsPanel.contains(event.target) &&
+          !el.notificationsBell.contains(event.target)) {
+        closeNotificationPanel(false);
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      unlockNotificationAudio();
+      if (!notificationPanelOpen) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeNotificationPanel(true);
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const focusable = Array.from(el.notificationsPanel.querySelectorAll(
+        "button:not(:disabled), [href], [tabindex]:not([tabindex='-1'])"
+      )).filter((node) => !node.closest(".hidden"));
+      if (!focusable.length) {
+        event.preventDefault();
+        el.notificationsPanel.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey &&
+          (document.activeElement === first || document.activeElement === el.notificationsPanel)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === el.notificationsPanel) {
+        event.preventDefault();
+        first.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    });
+
+    document.addEventListener("click", unlockNotificationAudio, { once: true });
+    window.addEventListener("resize", updateNotificationOverlayPosition);
+    updateNotificationMuteButton();
+    updateNotificationBadge();
+  }
+
+  function updateNotificationOverlayPosition() {
+    const header = el.dashboardView.querySelector(".console-header");
+    const top = header && !el.dashboardView.classList.contains("hidden")
+      ? Math.ceil(header.getBoundingClientRect().bottom + 8)
+      : 76;
+    document.documentElement.style.setProperty("--notification-panel-top", `${top}px`);
+    document.documentElement.style.setProperty("--notification-toasts-top", `${top}px`);
+  }
+
+  function openNotificationPanel() {
+    notificationPanelOpen = true;
+    el.notificationsPanel.classList.remove("hidden");
+    el.notificationsBell.setAttribute("aria-expanded", "true");
+    updateNotificationOverlayPosition();
+    renderNotificationPanel();
+    el.notificationsPanel.focus();
+  }
+
+  function closeNotificationPanel(restoreFocus = true) {
+    notificationPanelOpen = false;
+    el.notificationsPanel.classList.add("hidden");
+    el.notificationsBell.setAttribute("aria-expanded", "false");
+    if (restoreFocus && !el.dashboardView.classList.contains("hidden")) {
+      el.notificationsBell.focus();
+    }
+  }
+
+  function updateNotificationBadge() {
+    const count = unreadNotifications.length;
+    el.notificationsCount.textContent = count > 99 ? "99+" : String(count);
+    el.notificationsCount.classList.toggle("hidden", count === 0);
+    el.notificationsBell.classList.toggle("has-unread", count > 0);
+    el.notificationsBell.setAttribute(
+      "aria-label",
+      `Notifications, ${count} unread`
+    );
+    el.notificationsTabUnread.textContent = `Unread (${count})`;
+    el.notificationsTabRead.textContent = `Read (${readNotifications.length})`;
+  }
+
+  function updateNotificationMuteButton() {
+    const muted = notificationMuted;
+    const label = muted ? "Unmute notification sounds" : "Mute notification sounds";
+    el.notificationsMute.setAttribute("aria-label", label);
+    el.notificationsMute.title = label;
+    const ns = "http://www.w3.org/2000/svg";
+    const icon = el.notificationsSoundIcon;
+    icon.textContent = "";
+    const speaker = document.createElementNS(ns, "path");
+    speaker.setAttribute("d", "M11 5 6 9H2v6h4l5 4z");
+    icon.appendChild(speaker);
+    if (muted) {
+      const cross = document.createElementNS(ns, "path");
+      cross.setAttribute("d", "m16 9 5 6m0-6-5 6");
+      icon.appendChild(cross);
+    } else {
+      const waveOne = document.createElementNS(ns, "path");
+      waveOne.setAttribute("d", "M15.5 8.5a5 5 0 0 1 0 7");
+      const waveTwo = document.createElementNS(ns, "path");
+      waveTwo.setAttribute("d", "M19 5a10 10 0 0 1 0 14");
+      icon.appendChild(waveOne);
+      icon.appendChild(waveTwo);
+    }
+  }
+
+  function renderNotificationPanel() {
+    updateNotificationBadge();
+    renderNotificationList(el.notificationsListUnread, unreadNotifications, "No unread notifications", true);
+    renderNotificationList(el.notificationsListRead, readNotifications, "Nothing read yet", false);
+    el.notificationsListUnread.classList.toggle("hidden", notificationListTab !== "unread");
+    el.notificationsListRead.classList.toggle("hidden", notificationListTab !== "read");
+    el.notificationsTabUnread.classList.toggle("active", notificationListTab === "unread");
+    el.notificationsTabRead.classList.toggle("active", notificationListTab === "read");
+    el.notificationsTabUnread.setAttribute("aria-selected", String(notificationListTab === "unread"));
+    el.notificationsTabRead.setAttribute("aria-selected", String(notificationListTab === "read"));
+  }
+
+  function renderNotificationList(container, notifications, emptyMessage, unread) {
+    container.textContent = "";
+    if (!notifications.length) {
+      const empty = document.createElement("p");
+      empty.className = "notification-empty";
+      empty.textContent = emptyMessage;
+      container.appendChild(empty);
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    notifications.forEach((notification) => {
+      const entry = document.createElement("button");
+      entry.type = "button";
+      entry.className = `notification-entry${unread ? " is-unread" : ""}`;
+      const header = document.createElement("span");
+      header.className = "notification-entry-header";
+      const severity = document.createElement("span");
+      severity.className = `notification-severity notification-severity-${String(notification.severity).toLowerCase()}`;
+      severity.textContent = notification.severity;
+      header.appendChild(severity);
+      if (notification.ip) {
+        const ip = document.createElement("span");
+        ip.className = "notification-ip";
+        ip.textContent = notification.ip;
+        header.appendChild(ip);
+      }
+      const message = document.createElement("span");
+      message.className = "notification-message";
+      message.textContent = notification.message;
+      const time = document.createElement("span");
+      time.className = "notification-time";
+      time.textContent = formatLocalTime(notification.time);
+      entry.appendChild(header);
+      entry.appendChild(message);
+      entry.appendChild(time);
+      entry.addEventListener("click", () => {
+        if (unread) markNotificationRead(notification.id);
+        closeNotificationPanel(false);
+        jumpToNotificationSession(notification);
+      });
+      fragment.appendChild(entry);
+    });
+    container.appendChild(fragment);
+  }
+
+  function selectNotificationTab(tab) {
+    notificationListTab = tab;
+    renderNotificationPanel();
+    const selected = tab === "read" ? el.notificationsTabRead : el.notificationsTabUnread;
+    selected.focus();
+  }
+
+  function markNotificationRead(id) {
+    const index = unreadNotifications.findIndex((notification) => notification.id === id);
+    if (index < 0) return;
+    const [notification] = unreadNotifications.splice(index, 1);
+    readNotifications = [notification, ...readNotifications].slice(0, ALERT_CONFIG.MAX_READ_ALERTS);
+    persistNotifications();
+    renderNotificationPanel();
+  }
+
+  function markAllNotificationsRead() {
+    if (!unreadNotifications.length) return;
+    readNotifications = [...unreadNotifications, ...readNotifications]
+      .slice(0, ALERT_CONFIG.MAX_READ_ALERTS);
+    unreadNotifications = [];
+    persistNotifications();
+    renderNotificationPanel();
+  }
+
+  function toggleNotificationMute() {
+    notificationMuted = !notificationMuted;
+    writeAlertStorage("honeypot_alerts_muted", notificationMuted ? "true" : "false");
+    updateNotificationMuteButton();
+  }
+
+  function unlockNotificationAudio() {
+    if (pageAudioUnlocked) return;
+    pageAudioUnlocked = true;
+    const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextConstructor) return;
+    try {
+      alertAudioContext = new AudioContextConstructor();
+      if (alertAudioContext.state === "suspended") {
+        alertAudioContext.resume().catch(() => {});
+      }
+    } catch (error) {
+      alertAudioContext = null;
+    }
+  }
+
+  function playNotificationSound(severity) {
+    if (notificationMuted || !pageAudioUnlocked || !alertAudioContext) return;
+    try {
+      if (alertAudioContext.state === "suspended") {
+        alertAudioContext.resume().catch(() => {});
+      }
+      const critical = severity === "Critical";
+      const start = alertAudioContext.currentTime;
+      const notes = critical
+        ? [{ frequency: 440, delay: 0, duration: 0.16 }, { frequency: 554, delay: 0.2, duration: 0.24 }]
+        : [{ frequency: 660, delay: 0, duration: 0.11 }, { frequency: 880, delay: 0.14, duration: 0.16 }];
+      notes.forEach((note) => {
+        const oscillator = alertAudioContext.createOscillator();
+        const gain = alertAudioContext.createGain();
+        oscillator.type = "sine";
+        oscillator.frequency.setValueAtTime(note.frequency, start + note.delay);
+        gain.gain.setValueAtTime(0.0001, start + note.delay);
+        gain.gain.exponentialRampToValueAtTime(0.045, start + note.delay + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + note.delay + note.duration);
+        oscillator.connect(gain);
+        gain.connect(alertAudioContext.destination);
+        oscillator.start(start + note.delay);
+        oscillator.stop(start + note.delay + note.duration);
+      });
+    } catch (error) {
+      // Audio is optional and may be unavailable or blocked by the browser.
+    }
+  }
+
+  function reactKikoToAlert(isBruteForce) {
+    if (el.kikoDashStage.classList.contains("hidden")) return;
+    if (!alertReactionSnapshot) {
+      alertReactionSnapshot = {
+        wasSad: isKikoSad,
+        wasVisible: el.kikoDashBubble.style.opacity !== "0"
+      };
+    }
+    clearTimeout(kikoBubbleTimer);
+    clearTimeout(alertReactionTimerId);
+    el.kikoDashAvatar.classList.add("kiko-alert-reaction");
+    setKikoMouth(true);
+    showKikoBubble(
+      isBruteForce ? "Someone is trying lots of passwords!" : "Something is happening, check this out!",
+      6000
+    );
+    alertReactionTimerId = setTimeout(() => {
+      el.kikoDashAvatar.classList.remove("kiko-alert-reaction");
+      setKikoMouth(alertReactionSnapshot ? alertReactionSnapshot.wasSad : false);
+      const restoreBubble = alertReactionSnapshot && alertReactionSnapshot.wasVisible;
+      alertReactionSnapshot = null;
+      alertReactionTimerId = null;
+      if (restoreBubble) {
+        showKikoBubble(getCurrentMascotQuote());
+      } else {
+        if (el.kikoDashBubble) el.kikoDashBubble.style.opacity = "0";
+        if (el.kikoDashBubbleText) el.kikoDashBubbleText.textContent = getCurrentMascotQuote();
+      }
+    }, 6000);
+  }
+
+  function enqueueNotificationToast(notification, temporary = false) {
+    const toastItem = {
+      ...storedNotificationFields(notification),
+      temporary
+    };
+    toastQueue.unshift(toastItem);
+    showNextNotificationToasts();
+  }
+
+  function showTemporaryNotificationToast(message) {
+    enqueueNotificationToast({
+      id: createNotificationId(),
+      severity: "Info",
+      type: "temporary",
+      ip: "",
+      message,
+      time: new Date().toISOString(),
+      session_ids: []
+    }, true);
+  }
+
+  function showNextNotificationToasts() {
+    while (activeToasts.size < ALERT_CONFIG.MAX_VISIBLE_TOASTS && toastQueue.length) {
+      const notification = toastQueue.shift();
+      createNotificationToast(notification);
+    }
+  }
+
+  function createNotificationToast(notification) {
+    const toastId = `notification-toast-${++toastIdCounter}`;
+    const toast = document.createElement("article");
+    toast.className = `notification-toast notification-toast-${String(notification.severity).toLowerCase()}`;
+    toast.setAttribute("role", "status");
+    toast.setAttribute("aria-live", notification.severity === "Critical" ? "assertive" : "polite");
+
+    const body = document.createElement("button");
+    body.type = "button";
+    body.className = "notification-toast-body";
+    const header = document.createElement("span");
+    header.className = "notification-toast-header";
+    const severity = document.createElement("span");
+    severity.className = `notification-severity notification-severity-${String(notification.severity).toLowerCase()}`;
+    severity.textContent = notification.severity;
+    header.appendChild(severity);
+    if (notification.ip) {
+      const ip = document.createElement("span");
+      ip.className = "notification-ip";
+      ip.textContent = notification.ip;
+      header.appendChild(ip);
+    }
+    const message = document.createElement("span");
+    message.className = "notification-message";
+    message.textContent = notification.message;
+    body.appendChild(header);
+    body.appendChild(message);
+    body.addEventListener("click", () => handleNotificationToastSelection(toastId, notification));
+    toast.appendChild(body);
+
+    if (!notification.temporary && notification.session_ids.length) {
+      const viewLink = document.createElement("button");
+      viewLink.type = "button";
+      viewLink.className = "notification-toast-link";
+      viewLink.textContent = "View session";
+      viewLink.addEventListener("click", () => handleNotificationToastSelection(toastId, notification));
+      toast.appendChild(viewLink);
+    }
+
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "notification-toast-close";
+    close.setAttribute("aria-label", "Close notification");
+    close.textContent = "×";
+    close.addEventListener("click", (event) => {
+      event.stopPropagation();
+      dismissNotificationToast(toastId);
+    });
+    toast.appendChild(close);
+    el.notificationToasts.prepend(toast);
+    updateNotificationOverlayPosition();
+
+    const toastState = {
+      element: toast,
+      timerId: null,
+      remaining: ALERT_CONFIG.TOAST_SECONDS * 1000,
+      startedAt: 0,
+      temporary: notification.temporary
+    };
+    activeToasts.set(toastId, toastState);
+    if (notification.severity !== "Critical") {
+      resumeNotificationToastTimer(toastId);
+    }
+    toast.addEventListener("mouseenter", () => pauseNotificationToastTimer(toastId));
+    toast.addEventListener("mouseleave", () => {
+      if (!toast.contains(document.activeElement)) resumeNotificationToastTimer(toastId);
+    });
+    toast.addEventListener("focusin", () => pauseNotificationToastTimer(toastId));
+    toast.addEventListener("focusout", () => {
+      window.setTimeout(() => {
+        const state = activeToasts.get(toastId);
+        if (state && !state.element.matches(":hover") &&
+            !state.element.contains(document.activeElement)) {
+          resumeNotificationToastTimer(toastId);
+        }
+      }, 0);
+    });
+  }
+
+  function pauseNotificationToastTimer(toastId) {
+    const state = activeToasts.get(toastId);
+    if (!state || !state.timerId) return;
+    clearTimeout(state.timerId);
+    state.timerId = null;
+    state.remaining = Math.max(0, state.remaining - (Date.now() - state.startedAt));
+  }
+
+  function resumeNotificationToastTimer(toastId) {
+    const state = activeToasts.get(toastId);
+    if (!state || state.timerId || state.remaining <= 0 ||
+        state.element.classList.contains("is-closing")) return;
+    state.startedAt = Date.now();
+    state.timerId = window.setTimeout(() => dismissNotificationToast(toastId), state.remaining);
+  }
+
+  function dismissNotificationToast(toastId) {
+    const state = activeToasts.get(toastId);
+    if (!state || state.element.classList.contains("is-closing")) return;
+    if (state.timerId) clearTimeout(state.timerId);
+    state.timerId = null;
+    state.element.classList.add("is-closing");
+    window.setTimeout(() => {
+      const current = activeToasts.get(toastId);
+      if (current) current.element.remove();
+      activeToasts.delete(toastId);
+      showNextNotificationToasts();
+    }, 180);
+  }
+
+  function closeAllNotificationToasts() {
+    toastQueue = [];
+    activeToasts.forEach((state) => {
+      if (state.timerId) clearTimeout(state.timerId);
+    });
+    activeToasts.clear();
+    if (el.notificationToasts) el.notificationToasts.textContent = "";
+  }
+
+  function handleNotificationToastSelection(toastId, notification) {
+    dismissNotificationToast(toastId);
+    if (notification.temporary) return;
+    markNotificationRead(notification.id);
+    jumpToNotificationSession(notification);
+  }
+
+  function jumpToNotificationSession(notification) {
+    const requestedIds = Array.isArray(notification.session_ids)
+      ? notification.session_ids
+      : [];
+    const targetId = requestedIds[requestedIds.length - 1];
+    const sessions = lastDashboardData && Array.isArray(lastDashboardData.sessions)
+      ? lastDashboardData.sessions
+      : [];
+    const targetIndex = sessions.findIndex((session, index) =>
+      alertSessionKey(session, index) === targetId
+    );
+    if (targetIndex < 0) {
+      showTemporaryNotificationToast("That session is no longer in the dashboard data.");
+      return;
+    }
+
+    if (window.location.hash !== "#analysis") {
+      window.location.hash = "#analysis";
+    }
+    handleHashRouting();
+    if (el.sessionSearchInput.value) {
+      el.sessionSearchInput.value = "";
+      el.sessionSearchClear.classList.add("hidden");
+    }
+
+    const sorted = sortSessionsList([...sessions], currentSortColumn, currentSortAsc);
+    const sortedIndex = sorted.indexOf(sessions[targetIndex]);
+    sessionsDisplayLimit = Math.max(sessionsDisplayLimit, sortedIndex + 1);
+    setSessionExpanded(String(targetId), true);
+
+    window.requestAnimationFrame(() => {
+      const row = Array.from(el.sessionsTbody.querySelectorAll(".session-row"))
+        .find((candidate) => candidate.dataset.sessionId === String(targetId));
+      if (!row) {
+        showTemporaryNotificationToast("That session is no longer in the dashboard data.");
+        return;
+      }
+      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      row.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth", block: "center" });
+      el.sessionsTbody.querySelectorAll(".notification-session-highlight")
+        .forEach((highlightedRow) => highlightedRow.classList.remove("notification-session-highlight"));
+      row.classList.add("notification-session-highlight");
+      row.focus({ preventScroll: true });
+      clearTimeout(notificationHighlightTimerId);
+      notificationHighlightTimerId = window.setTimeout(() => {
+        row.classList.remove("notification-session-highlight");
+        notificationHighlightTimerId = null;
+      }, 2000);
+    });
+  }
+
   /* ==========================================================================
      INITIALIZATION ON DOMContentLoaded
      ========================================================================== */
   document.addEventListener("DOMContentLoaded", () => {
     initMascot();
     initNavigation();
+    initNotifications();
     initPdfExport();
     initAuth();
   });
