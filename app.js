@@ -25,6 +25,21 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     { ip: "203.0.113.87", risk: "low", lat: -31.9505, lng: 115.8605 }
   ];
 
+  function getStoredToken() {
+    const value = sessionStorage.getItem(TOKEN_KEY);
+    if (typeof value !== "string") return "";
+    const trimmed = value.trim();
+    return trimmed.length >= 8 ? trimmed : "";
+  }
+
+  function buildAuthHeaders(extraHeaders = {}) {
+    const token = getStoredToken();
+    return {
+      ...extraHeaders,
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    };
+  }
+
   // Global State
   let countdownTimerId = null;
   let loginRequestInFlight = false;
@@ -394,11 +409,14 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
     el.loginForm.addEventListener("submit", handleLoginSubmit);
 
-    // Auto-login if token already in sessionStorage
-    const existingToken = sessionStorage.getItem(TOKEN_KEY);
-    if (existingToken) {
-      showDashboardView();
+    // Auto-login only if a non-empty token is present.
+    const existingToken = getStoredToken();
+    if (!existingToken) {
+      sessionStorage.removeItem(TOKEN_KEY);
+      return;
     }
+
+    showDashboardView();
   }
 
   async function handleLoginSubmit(e) {
@@ -448,8 +466,8 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
       if (response.status === 200) {
         const data = await response.json().catch(() => ({}));
-        const token = data.token || data.access_token;
-        if (token) {
+        const token = String(data.token || data.access_token || "").trim();
+        if (token.length >= 8) {
           sessionStorage.setItem(TOKEN_KEY, token);
           el.passwordInput.value = "";
           authenticated = true;
@@ -705,7 +723,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
   async function fetchDashboardData(isFirstLoad = false) {
     if (dashboardRequestInFlight) return;
 
-    const token = sessionStorage.getItem(TOKEN_KEY);
+    const token = getStoredToken();
     if (!token) {
       handleLogout("Session expired, please log in again.");
       return;
@@ -720,9 +738,9 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
       const res = await fetch(`${API_BASE}/api/dashboard`, {
         method: "GET",
         signal: controller.signal,
-        headers: {
-          "Authorization": `Bearer ${token}`
-        }
+        headers: buildAuthHeaders({
+          Accept: "application/json"
+        })
       });
 
       if (res.status === 401) {
@@ -736,6 +754,17 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
 
       data = await res.json();
     } catch (err) {
+      lastDashboardData = null;
+      el.exportPdfBtn.disabled = true;
+      renderDashboard({
+        stats: {},
+        timeline: [],
+        risk_distribution: {},
+        sessions: [],
+        top_ips: [],
+        top_tools: [],
+        top_commands: []
+      });
       el.connectionBannerText.textContent = controller.signal.aborted
         ? "Dashboard request timed out, retrying..."
         : "Connection lost, retrying...";
@@ -791,9 +820,9 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     try {
       const res = await fetch(`${API_BASE}/api/rules`, {
         method: "GET",
-        headers: {
+        headers: buildAuthHeaders({
           Accept: "application/json"
-        }
+        })
       });
 
       if (!res.ok) {
@@ -1307,8 +1336,7 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
         const lat = Number(s.latitude);
         const lng = Number(s.longitude);
         if (Number.isFinite(lat) && Number.isFinite(lng) &&
-            lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180 &&
-            typeof s.latitude === "number" && typeof s.longitude === "number") {
+            lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
           const ip = String(s.src_ip || "Unknown IP");
           const risk = String(s.risk_level || "low").toLowerCase();
           const marker = markersByIp.get(ip);
@@ -1692,7 +1720,8 @@ const BACKEND_URL = "https://honeypot-backend-766u.onrender.com";
     const sorted = sortSessionsList([...filteredSessions], currentSortColumn, currentSortAsc);
     const visibleSessions = sorted.slice(0, sessionsDisplayLimit);
 
-    el.tableRecordCount.textContent = `Showing ${visibleSessions.length} of ${sessions.length}`;
+    const totalVisible = searchQuery ? filteredSessions.length : sessions.length;
+    el.tableRecordCount.textContent = `Showing ${visibleSessions.length} of ${totalVisible}`;
     el.sessionsTbody.textContent = "";
 
     if (filteredSessions.length > sessionsDisplayLimit) {
